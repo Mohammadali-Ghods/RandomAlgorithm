@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import time
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -49,7 +50,8 @@ STATE = {
         "high": "0.11000",
         "count": 10,
         "quantity": "20",
-        "discount": "0.001",
+        "auto_quantity": False,  # random qty per order, scaled to total balances
+        "discount": "0.005",
         "same_count": 3,
         "expire": 60,
         "window": 60,          # seconds per round; interval = window / count
@@ -114,6 +116,39 @@ def _interruptible_sleep(seconds: float):
             if not STATE["running"]:
                 return
         time.sleep(0.15)
+
+
+MIN_ORDER_USDT = Decimal("1.05")   # keep price*qty above the ~1 USDT minimum
+_Q01 = Decimal("0.01")             # quantity has up to 2 decimals
+
+
+def _auto_quantity(cfg, balances, count, low_price) -> Decimal:
+    """A CSPRNG-random quantity for one order, scaled to the accounts' TOTAL assets.
+
+    Upper bound: the round's whole quantity budget divided by `count`, where the
+    budget is the smaller of what total UNP (for sells) and total USDT (for buys,
+    at mid price) can move -> a full round never exceeds the balances.
+    Lower bound: enough that price*qty clears the ~1 USDT minimum order value.
+    Falls back to the manual quantity if balances are unavailable.
+    """
+    accounts = (balances or {}).get("accounts", {})
+    total_unp = api._free(accounts.get("1", {}), "UNP") + api._free(accounts.get("2", {}), "UNP")
+    total_usdt = api._free(accounts.get("1", {}), "USDT") + api._free(accounts.get("2", {}), "USDT")
+    try:
+        low, high = Decimal(str(cfg["low"])), Decimal(str(cfg["high"]))
+        lp = Decimal(str(low_price))
+    except Exception:
+        return Decimal(str(cfg["quantity"]))
+    ref = (low + high) / 2
+    if ref <= 0 or lp <= 0:
+        return Decimal(str(cfg["quantity"]))
+    budget_units = min(total_unp, total_usdt / ref)          # UNP-qty a round can move
+    max_q = (budget_units / Decimal(max(count, 1))).quantize(_Q01, rounding=ROUND_DOWN)
+    min_q = (MIN_ORDER_USDT / lp).quantize(_Q01, rounding=ROUND_UP)
+    if max_q <= min_q:
+        return min_q
+    steps = int((max_q - min_q) / _Q01)
+    return min_q + Decimal(secrets.randbelow(steps + 1)) * _Q01
 
 
 def _wait_for_candle_open() -> bool:
@@ -213,6 +248,14 @@ def _worker_loop():
                 buy_price = value - discount
                 sell_price = value + discount
 
+            # Random quantity (scaled to total assets) when enabled; the pair
+            # shares one qty so the first-N orders cross fully.
+            if cfg.get("auto_quantity"):
+                low_price = min(buy_price, sell_price)
+                qty = api._fmt(
+                    _auto_quantity(cfg, STATE["balances"], count, low_price), api._QTY_Q
+                )
+
             bp = api._fmt(buy_price, api._PRICE_Q)
             sp = api._fmt(sell_price, api._PRICE_Q)
 
@@ -294,8 +337,9 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ("count", "same_count", "expire", "window", "buyer", "seller"):
                     if k in data:
                         STATE["config"][k] = int(data[k])
-                if "align_candle" in data:
-                    STATE["config"]["align_candle"] = bool(data["align_candle"])
+                for k in ("align_candle", "auto_quantity"):
+                    if k in data:
+                        STATE["config"][k] = bool(data[k])
                 if STATE["config"]["mode"] == "manual":
                     STATE["roles"] = {
                         "buyer": STATE["config"]["buyer"],

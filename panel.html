@@ -230,6 +230,12 @@ tbody tr{border-top:1px solid rgba(120,150,220,.1);animation:rowin .4s cubic-bez
         <div class="fld"><label>Count (values)</label><input id="count" type="number" min="1" max="200" value="10"></div>
         <div class="fld"><label>Quantity / order</label><input id="quantity" value="20"></div>
       </div>
+      <div class="fld">
+        <label>Auto quantity</label>
+        <label class="toggle"><input type="checkbox" id="auto_quantity"><span class="tk"></span>
+          <span>Random each order, scaled to total UNP + USDT</span></label>
+        <div class="note" id="qtyNote"></div>
+      </div>
       <div class="row">
         <div class="fld"><label>Buy discount (after N)</label><input id="discount" value="0.005"></div>
         <div class="fld"><label>Same-price count (N)</label><input id="same_count" type="number" min="0" value="3"></div>
@@ -322,10 +328,11 @@ $('#modeSeg').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
 
 function readCfg(){return{
   low:$('#low').value.trim(),high:$('#high').value.trim(),count:+$('#count').value,quantity:$('#quantity').value.trim(),
+  auto_quantity:$('#auto_quantity').checked,
   discount:$('#discount').value.trim(),same_count:+$('#same_count').value,expire:+$('#expire').value,window:+$('#window').value,
   align_candle:$('#align_candle').checked,mode,buyer:+$('#buyer').value,seller:+$('#seller').value};}
 
-['low','high','discount','count','same_count','expire','window','align_candle'].forEach(id=>{
+['low','high','discount','count','same_count','expire','window','align_candle','auto_quantity','quantity'].forEach(id=>{
   const el=document.getElementById(id);['input','change'].forEach(ev=>el.addEventListener(ev,()=>pacing(readCfg())));});
 
 async function save(){const c=readCfg();await api('/api/config','POST',c);pacing(c);$('#err').textContent='';}
@@ -337,6 +344,22 @@ function pacing(c){
   const iv=c.window/Math.max(c.count,1);
   $('#pacing').textContent=`${c.count} pairs/round · one every ${iv.toFixed(2)}s · expires ${c.expire}s`
     +(c.align_candle?' · synced to 1M candle':'')+' · loops until Stop';
+  // Auto-quantity: disable manual field, show the random range scaled to assets.
+  $('#quantity').disabled=c.auto_quantity;$('#quantity').style.opacity=c.auto_quantity?.45:1;
+  const qn=$('#qtyNote');
+  if(c.auto_quantity){
+    const accs=lastState?.balances?.accounts||{};
+    const f=(n,a)=>+((accs[n]?.assets?.[a]?.free)||0);
+    const tUNP=f('1','UNP')+f('2','UNP'),tUSDT=f('1','USDT')+f('2','USDT');
+    const ref=((+c.low)+(+c.high))/2,lowP=Math.max(1e-9,(+c.low)-(+c.discount));
+    const budget=(ref>0)?Math.min(tUNP,tUSDT/ref):0;
+    const maxQ=Math.floor((budget/Math.max(c.count,1))*100)/100;
+    const minQ=Math.ceil((1.05/lowP)*100)/100;
+    qn.className='note';
+    qn.textContent=(maxQ>minQ)
+      ? `Random ${minQ.toFixed(2)}–${maxQ.toFixed(2)} UNP/order · budget ≈ ${budget.toFixed(0)} UNP (total UNP ${fmt(tUNP,2)}, USDT ${fmt(tUSDT,2)})`
+      : `~${minQ.toFixed(2)} UNP/order (balances tight for ${c.count} orders)`;
+  } else qn.textContent='';
   const span=Math.abs((+c.high)-(+c.low)),d=+c.discount,minSafe=span/2,safe=d>=minSafe&&d>0;
   const f=$('#fillNote');f.className='note'+(safe?'':' warn');
   f.textContent=`Fills: first ${c.same_count} cross → FILL · after ${c.same_count} rest (bid −${d}, ask +${d}) → no fill`
@@ -480,6 +503,7 @@ async function tick(){
   $('#startBtn').disabled=s.running;$('#stopBtn').disabled=!s.running;
   $('#health').innerHTML='health '+(s.balances?.ok!==false?'<b class="online">●</b>':'<b style="color:var(--sell)">●</b>');
   balances(s);book(s.orders||[]);statsPatch(s.orders||[]);rows(s.orders||[]);
+  pacing(readCfg());   // refresh auto-quantity estimate with live balances
 }
 function loop(){renderStatus();drawChart();requestAnimationFrame(loop);}
 pacing(readCfg());tick();setInterval(tick,1500);requestAnimationFrame(loop);
