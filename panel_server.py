@@ -64,6 +64,7 @@ STATE = {
     "round": 0,
     "phase": "idle",           # idle | waiting | running | stopping
     "candle_wait_until": None, # epoch of the next candle open we're waiting for
+    "round_started_at": None,  # epoch when the current round began sending
     "last_error": None,
 }
 
@@ -181,6 +182,7 @@ def _worker_loop():
                 continue
             STATE["round"] += 1
             STATE["phase"] = "running"
+            STATE["round_started_at"] = time.time()
 
         _refresh_balances_and_roles()
         with _lock:
