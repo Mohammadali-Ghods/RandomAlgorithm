@@ -230,6 +230,12 @@ tbody tr{border-top:1px solid rgba(120,150,220,.1);animation:rowin .4s cubic-bez
         <div class="fld"><label>Count (values)</label><input id="count" type="number" min="1" max="200" value="10"></div>
         <div class="fld"><label>Quantity / order</label><input id="quantity" value="20"></div>
       </div>
+      <div class="fld">
+        <label>Auto count</label>
+        <label class="toggle"><input type="checkbox" id="auto_count"><span class="tk"></span>
+          <span>Random each round, scaled to total UNP + USDT</span></label>
+        <div class="note" id="countNote"></div>
+      </div>
       <div class="row">
         <div class="fld"><label>Buy discount (after N)</label><input id="discount" value="0.005"></div>
         <div class="fld"><label>Same-price count (N)</label><input id="same_count" type="number" min="0" value="3"></div>
@@ -322,11 +328,21 @@ $('#modeSeg').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
 
 function readCfg(){return{
   low:$('#low').value.trim(),high:$('#high').value.trim(),count:+$('#count').value,quantity:$('#quantity').value.trim(),
+  auto_count:$('#auto_count').checked,
   discount:$('#discount').value.trim(),same_count:+$('#same_count').value,expire:+$('#expire').value,window:+$('#window').value,
   align_candle:$('#align_candle').checked,mode,buyer:+$('#buyer').value,seller:+$('#seller').value};}
 
-['low','high','discount','count','same_count','expire','window','align_candle'].forEach(id=>{
+['low','high','discount','count','same_count','expire','window','align_candle','auto_count','quantity'].forEach(id=>{
   const el=document.getElementById(id);['input','change'].forEach(ev=>el.addEventListener(ev,()=>pacing(readCfg())));});
+
+function capacityEst(c){
+  const accs=lastState?.balances?.accounts||{};
+  const f=(n,a)=>+((accs[n]?.assets?.[a]?.free)||0);
+  const tUNP=f('1','UNP')+f('2','UNP'), tUSDT=f('1','USDT')+f('2','USDT');
+  const qty=+c.quantity, mid=((+c.low)+(+c.high))/2;
+  const cap=(qty>0&&mid>0)?Math.floor(Math.min(tUNP/qty, tUSDT/(mid*qty))):0;
+  return {cap,tUNP,tUSDT};
+}
 
 async function save(){const c=readCfg();await api('/api/config','POST',c);pacing(c);$('#err').textContent='';}
 $('#saveBtn').onclick=save;
@@ -334,8 +350,18 @@ $('#startBtn').onclick=async()=>{await save();await api('/api/start','POST');};
 $('#stopBtn').onclick=()=>api('/api/stop','POST');
 
 function pacing(c){
-  const iv=c.window/Math.max(c.count,1);
-  $('#pacing').textContent=`${c.count} pairs/round · one every ${iv.toFixed(2)}s · expires ${c.expire}s`
+  // Auto-count: disable manual field, show capacity + the last picked count.
+  $('#count').disabled=c.auto_count;
+  $('#count').style.opacity=c.auto_count?.45:1;
+  const cn=$('#countNote');
+  if(c.auto_count){
+    const {cap,tUNP,tUSDT}=capacityEst(c), upper=Math.max(1,Math.min(cap,60));
+    const picked=(lastState?.running&&lastState?.auto_count_value)?` · this round: ${lastState.auto_count_value}`:'';
+    cn.className='note';
+    cn.textContent=`Random 1–${upper} pairs/round · capacity ≈ ${cap} (total UNP ${fmt(tUNP,2)}, USDT ${fmt(tUSDT,2)})${picked}`;
+  } else cn.textContent='';
+  const cShown=c.auto_count?'auto':c.count, iv=c.window/Math.max(c.auto_count?10:c.count,1);
+  $('#pacing').textContent=`${cShown} pairs/round · ~one every ${iv.toFixed(2)}s · expires ${c.expire}s`
     +(c.align_candle?' · synced to 1M candle':'')+' · loops until Stop';
   const span=Math.abs((+c.high)-(+c.low)),d=+c.discount,minSafe=span/2,safe=d>=minSafe&&d>0;
   const f=$('#fillNote');f.className='note'+(safe?'':' warn');
@@ -480,6 +506,7 @@ async function tick(){
   $('#startBtn').disabled=s.running;$('#stopBtn').disabled=!s.running;
   $('#health').innerHTML='health '+(s.balances?.ok!==false?'<b class="online">●</b>':'<b style="color:var(--sell)">●</b>');
   balances(s);book(s.orders||[]);statsPatch(s.orders||[]);rows(s.orders||[]);
+  pacing(readCfg());   // refresh capacity estimate + picked auto-count
 }
 function loop(){renderStatus();drawChart();requestAnimationFrame(loop);}
 pacing(readCfg());tick();setInterval(tick,1500);requestAnimationFrame(loop);
