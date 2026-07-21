@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Exuno · UNPUSDT Control Panel</title>
+<style>
+  :root{
+    --bg:#0a0e1a; --bg2:#0f1424; --card:rgba(22,28,46,.72); --line:rgba(120,140,190,.14);
+    --txt:#e7ecf6; --mut:#8794b3; --buy:#22d38a; --sell:#ff5d73; --acc:#5b8cff;
+    --gold:#ffcf5b; --shadow:0 18px 50px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;color:var(--txt);
+    background:
+      radial-gradient(1100px 600px at 82% -8%,rgba(91,140,255,.16),transparent 60%),
+      radial-gradient(900px 500px at 8% 108%,rgba(34,211,138,.12),transparent 60%),
+      linear-gradient(160deg,var(--bg),var(--bg2));
+    min-height:100%;padding:22px;
+  }
+  .wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+  h1{font-size:20px;margin:0;letter-spacing:.3px;display:flex;align-items:center;gap:12px}
+  .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--acc),var(--buy));
+    display:grid;place-items:center;font-weight:800;box-shadow:var(--shadow);animation:float 5s ease-in-out infinite}
+  @keyframes float{50%{transform:translateY(-3px)}}
+  .sub{color:var(--mut);font-size:12.5px;font-weight:500}
+  .grid{display:grid;gap:18px}
+  .top{grid-template-columns:1.15fr .85fr}
+  @media(max-width:980px){.top{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;
+    backdrop-filter:blur(9px);box-shadow:var(--shadow)}
+  .card h2{margin:0 0 14px;font-size:13px;text-transform:uppercase;letter-spacing:1.4px;color:var(--mut)}
+  header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+
+  /* status pill */
+  .pill{display:inline-flex;align-items:center;gap:9px;padding:8px 15px;border-radius:999px;
+    font-weight:700;font-size:13px;border:1px solid var(--line);background:rgba(10,14,26,.5)}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
+  .pill.run .dot{background:var(--buy);box-shadow:0 0 0 0 rgba(34,211,138,.7);animation:pulse 1.4s infinite}
+  .pill.stop .dot{background:var(--gold)}
+  @keyframes pulse{70%{box-shadow:0 0 0 12px rgba(34,211,138,0)}100%{box-shadow:0 0 0 0 rgba(34,211,138,0)}}
+  .chip{font-size:12px;color:var(--mut);padding:6px 12px;border:1px solid var(--line);border-radius:999px}
+
+  /* form */
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .fld{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+  label{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+  input,select{background:rgba(8,12,22,.7);border:1px solid var(--line);color:var(--txt);
+    border-radius:11px;padding:11px 12px;font-size:14px;font-family:inherit;outline:none;transition:.15s}
+  input:focus,select:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(91,140,255,.2)}
+  .btns{display:flex;gap:12px;margin-top:6px}
+  button{flex:1;border:none;border-radius:12px;padding:13px;font-size:14.5px;font-weight:800;
+    cursor:pointer;color:#04121a;transition:transform .12s,filter .12s;font-family:inherit}
+  button:active{transform:translateY(1px)}
+  .start{background:linear-gradient(135deg,var(--buy),#7ef0be)}
+  .stop{background:linear-gradient(135deg,var(--sell),#ff97a6)}
+  button:disabled{filter:grayscale(.7) brightness(.7);cursor:not-allowed}
+  button.ghost{background:rgba(91,140,255,.14);color:var(--txt);border:1px solid var(--line);flex:0 0 auto;padding:13px 16px}
+
+  /* accounts */
+  .accs{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:560px){.accs{grid-template-columns:1fr}}
+  .acc{border:1px solid var(--line);border-radius:15px;padding:15px;background:rgba(10,14,26,.4);position:relative;overflow:hidden}
+  .acc .name{font-weight:800;font-size:15px}
+  .role{position:absolute;top:12px;right:12px;font-size:10.5px;font-weight:800;letter-spacing:1px;
+    padding:5px 10px;border-radius:999px;opacity:0;transition:.3s}
+  .role.buyer{background:rgba(34,211,138,.16);color:var(--buy);border:1px solid rgba(34,211,138,.4);opacity:1}
+  .role.seller{background:rgba(255,93,115,.16);color:var(--sell);border:1px solid rgba(255,93,115,.4);opacity:1}
+  .asset{margin-top:14px}
+  .asset .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+  .asset .top b{font-variant-numeric:tabular-nums;font-size:15px}
+  .bar{height:8px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:99px;width:0;transition:width .7s cubic-bezier(.2,.8,.2,1)}
+  .unp .bar>i{background:linear-gradient(90deg,var(--acc),#8fb2ff)}
+  .usdt .bar>i{background:linear-gradient(90deg,var(--gold),#ffe29a)}
+  .muted{color:var(--mut);font-size:11px}
+
+  /* order book ladder */
+  .book{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .side h3{margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase}
+  .side.bid h3{color:var(--buy)} .side.ask h3{color:var(--sell)}
+  .lvl{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0;font-variant-numeric:tabular-nums}
+  .lvl .lb{position:relative;flex:1;height:20px;border-radius:6px;overflow:hidden;background:rgba(255,255,255,.04)}
+  .lvl .lb>i{position:absolute;top:0;bottom:0;width:0;transition:width .6s ease}
+  .bid .lb>i{right:0;background:linear-gradient(90deg,transparent,rgba(34,211,138,.4))}
+  .ask .lb>i{left:0;background:linear-gradient(90deg,rgba(255,93,115,.4),transparent)}
+  .lvl .px{width:64px;font-weight:700}
+  .bid .px{color:var(--buy)} .ask .px{color:var(--sell)}
+  .lvl .qt{width:44px;text-align:right;color:var(--mut)}
+
+  /* stats */
+  .stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+  .stat{flex:1;min-width:96px;border:1px solid var(--line);border-radius:12px;padding:11px 13px;background:rgba(10,14,26,.4)}
+  .stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+  .stat span{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+
+  /* orders table */
+  .tbl{max-height:360px;overflow:auto;border-radius:12px;border:1px solid var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:9px 12px;text-align:left;white-space:nowrap;font-variant-numeric:tabular-nums}
+  th{position:sticky;top:0;background:#121728;color:var(--mut);font-size:11px;letter-spacing:.6px;text-transform:uppercase;z-index:1}
+  tbody tr{border-top:1px solid var(--line);animation:slidein .35s ease}
+  @keyframes slidein{from{opacity:0;transform:translateY(-6px)}}
+  .tag{font-weight:800;padding:2px 9px;border-radius:999px;font-size:11px}
+  .BUY{color:var(--buy);background:rgba(34,211,138,.13)}
+  .SELL{color:var(--sell);background:rgba(255,93,115,.13)}
+  .st{font-weight:700;font-size:11.5px}
+  .st.open{color:var(--acc)} .st.filled{color:var(--buy)}
+  .st.cancelled{color:var(--mut)} .st.rejected,.st.cancel_failed{color:var(--sell)}
+  .flash{animation:flash .8s ease}
+  @keyframes flash{from{background:rgba(91,140,255,.22)}}
+  .err{color:var(--sell);font-size:11px;margin-top:8px;min-height:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="logo">E</span> Exuno <span class="sub">UNPUSDT · order-book training panel</span></h1>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="chip" id="health">health: …</span>
+      <span class="chip" id="round">round 0</span>
+      <span class="pill" id="status"><span class="dot"></span><span id="statusTxt">idle</span></span>
+    </div>
+  </header>
+
+  <div class="grid top">
+    <!-- CONTROLS -->
+    <div class="card">
+      <h2>Configuration</h2>
+      <div class="row">
+        <div class="fld"><label>Low value</label><input id="low" value="0.10000"></div>
+        <div class="fld"><label>High value</label><input id="high" value="0.11000"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Count (values)</label><input id="count" type="number" min="1" max="200" value="10"></div>
+        <div class="fld"><label>Quantity / order (UNP)</label><input id="quantity" value="20"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Buy discount (items after N)</label><input id="discount" value="0.001"></div>
+        <div class="fld"><label>Same-price count (N)</label><input id="same_count" type="number" min="0" value="3"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Expire / order (s)</label><input id="expire" type="number" min="5" value="60"></div>
+        <div class="fld"><label>Round window (s)</label><input id="window" type="number" min="5" value="60"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Role mode</label>
+          <select id="mode"><option value="auto">Auto (by balances)</option><option value="manual">Manual</option></select>
+        </div>
+        <div class="fld" id="manualRoles" style="display:none">
+          <label>Buyer / Seller</label>
+          <div style="display:flex;gap:8px">
+            <select id="buyer"><option value="1">Buy: 1</option><option value="2" selected>Buy: 2</option></select>
+            <select id="seller"><option value="1" selected>Sell: 1</option><option value="2">Sell: 2</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="btns">
+        <button class="ghost" id="saveBtn">Save</button>
+        <button class="start" id="startBtn">▶ Start</button>
+        <button class="stop" id="stopBtn" disabled>■ Stop</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div class="muted" id="pacing" style="margin-top:8px"></div>
+    </div>
+
+    <!-- ACCOUNTS -->
+    <div class="card">
+      <h2>Live balances</h2>
+      <div class="accs" id="accs"></div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:.85fr 1.15fr">
+    <!-- ORDER BOOK -->
+    <div class="card">
+      <h2>Open order book (live)</h2>
+      <div class="book">
+        <div class="side bid"><h3>Bids · BUY</h3><div id="bids"></div></div>
+        <div class="side ask"><h3>Asks · SELL</h3><div id="asks"></div></div>
+      </div>
+    </div>
+
+    <!-- ORDERS -->
+    <div class="card">
+      <h2>Orders — who bought / who sold</h2>
+      <div class="stats" id="stats"></div>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>#</th><th>Time</th><th>R</th><th>Side</th><th>Acct</th><th>Price</th><th>Qty</th><th>Status</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (p,m,b)=>fetch(p,{method:m||'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
+const fmt = (n,d=5)=>Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+let seenSeq = 0, maxBal = {UNP:600, USDT:80};
+
+$('#mode').onchange = e => $('#manualRoles').style.display = e.target.value==='manual'?'flex':'none';
+
+function readCfg(){
+  return {
+    low:$('#low').value.trim(), high:$('#high').value.trim(),
+    count:+$('#count').value, quantity:$('#quantity').value.trim(),
+    discount:$('#discount').value.trim(), same_count:+$('#same_count').value,
+    expire:+$('#expire').value, window:+$('#window').value,
+    mode:$('#mode').value, buyer:+$('#buyer').value, seller:+$('#seller').value
+  };
+}
+async function save(){ const c=readCfg(); await api('/api/config','POST',c); pacing(c); flashErr(''); }
+function pacing(c){ const iv=(c.window/Math.max(c.count,1)); $('#pacing').textContent=
+  `${c.count} pairs/round · one every ${iv.toFixed(2)}s · each expires in ${c.expire}s · continuous until Stop`; }
+function flashErr(t){ $('#err').textContent=t||''; }
+
+$('#saveBtn').onclick = save;
+$('#startBtn').onclick = async ()=>{ await save(); await api('/api/start','POST'); };
+$('#stopBtn').onclick  = ()=> api('/api/stop','POST');
+
+function accountCard(n, blob, roles){
+  const a = blob?.assets||{};
+  const unp = +(a.UNP?.free||0), usdt = +(a.USDT?.free||0);
+  const lockU=+(a.UNP?.locked||0), lockD=+(a.USDT?.locked||0);
+  maxBal.UNP=Math.max(maxBal.UNP,unp*1.1); maxBal.USDT=Math.max(maxBal.USDT,usdt*1.1);
+  const role = roles.buyer===n?'buyer':roles.seller===n?'seller':'';
+  const label = role==='buyer'?'BUYER':role==='seller'?'SELLER':'';
+  return `<div class="acc">
+    <div class="name">Account ${n}</div>
+    <div class="role ${role}">${label}</div>
+    <div class="asset unp">
+      <div class="top"><span>UNP</span><b data-v="${unp}">${fmt(unp,2)}</b></div>
+      <div class="bar"><i style="width:${Math.min(100,unp/maxBal.UNP*100)}%"></i></div>
+      <div class="muted">locked ${fmt(lockU,2)}</div>
+    </div>
+    <div class="asset usdt">
+      <div class="top"><span>USDT</span><b data-v="${usdt}">${fmt(usdt,2)}</b></div>
+      <div class="bar"><i style="width:${Math.min(100,usdt/maxBal.USDT*100)}%"></i></div>
+      <div class="muted">locked ${fmt(lockD,2)}</div>
+    </div>
+  </div>`;
+}
+
+function renderBook(orders){
+  const open = orders.filter(o=>o.status==='open');
+  const agg = side => {
+    const m={}; open.filter(o=>o.side===side).forEach(o=>{m[o.price]=(m[o.price]||0)+ +o.quantity;});
+    return Object.entries(m).map(([px,qt])=>({px:+px,qt}));
+  };
+  const bids = agg('BUY').sort((a,b)=>b.px-a.px).slice(0,8);
+  const asks = agg('SELL').sort((a,b)=>a.px-b.px).slice(0,8);
+  const maxQ = Math.max(1,...bids.map(x=>x.qt),...asks.map(x=>x.qt));
+  const row = (x,cls)=>`<div class="lvl">
+      <span class="px">${fmt(x.px,5)}</span>
+      <span class="lb"><i style="width:${x.qt/maxQ*100}%"></i></span>
+      <span class="qt">${fmt(x.qt,0)}</span></div>`;
+  $('#bids').innerHTML = bids.map(x=>row(x,'bid')).join('')||'<div class="muted">no open bids</div>';
+  $('#asks').innerHTML = asks.map(x=>row(x,'ask')).join('')||'<div class="muted">no open asks</div>';
+}
+
+function renderStats(orders){
+  const c = s => orders.filter(s).length;
+  const cells = [
+    ['Buys', c(o=>o.side==='BUY')], ['Sells', c(o=>o.side==='SELL')],
+    ['Open', c(o=>o.status==='open')], ['Filled', c(o=>o.status==='filled')],
+    ['Cancelled', c(o=>o.status==='cancelled')], ['Rejected', c(o=>o.status==='rejected'||o.status==='cancel_failed')],
+  ];
+  $('#stats').innerHTML = cells.map(([l,v])=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`).join('');
+}
+
+function renderRows(orders){
+  const rows = orders.slice(-120).reverse();
+  const body = $('#rows');
+  body.innerHTML = rows.map(o=>{
+    const t = new Date(o.ts*1000).toLocaleTimeString();
+    const isNew = o.seq>seenSeq;
+    return `<tr class="${isNew?'flash':''}">
+      <td>${o.seq}</td><td>${t}</td><td>${o.round}</td>
+      <td><span class="tag ${o.side}">${o.side}</span></td>
+      <td>#${o.account}</td><td>${fmt(o.price,5)}</td><td>${fmt(o.quantity,2)}</td>
+      <td class="st ${o.status}">${o.status}${o.error?` · ${String(o.error).slice(0,22)}`:''}</td></tr>`;
+  }).join('');
+  seenSeq = orders.reduce((m,o)=>Math.max(m,o.seq),seenSeq);
+}
+
+async function tick(){
+  let s; try{ s = await api('/api/state'); }catch{ return; }
+  // status
+  const st=$('#status'), running=s.running, phase=s.phase;
+  st.className='pill'+(running?' run':phase==='stopping'?' stop':'');
+  $('#statusTxt').textContent = running?'running':phase==='stopping'?'stopping':'idle';
+  $('#round').textContent = 'round '+s.round;
+  $('#startBtn').disabled = running; $('#stopBtn').disabled = !running;
+
+  // health
+  $('#health').textContent = s.balances?.ok!==false ? 'health: online ●' : 'health: error';
+
+  // accounts
+  const accs = s.balances?.accounts||{};
+  $('#accs').innerHTML = [1,2].map(n=>accountCard(n, accs[String(n)], s.roles)).join('');
+
+  // book + orders
+  renderBook(s.orders||[]); renderStats(s.orders||[]); renderRows(s.orders||[]);
+  if(s.last_error) flashErr(s.last_error);
+}
+pacing(readCfg());
+tick(); setInterval(tick, 1500);
+</script>
+</body>
+</html>
