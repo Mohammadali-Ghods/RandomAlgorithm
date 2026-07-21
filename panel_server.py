@@ -200,8 +200,16 @@ def _worker_loop():
                 if not STATE["running"]:
                     break
                 api.EXPIRE_SECONDS = int(cfg["expire"])
-            buy_price = value if i < same_count else value - discount
-            sell_price = value
+            if i < same_count:
+                # First N: buy and sell at the same price -> the two accounts
+                # cross each other and the pair FILLS (creates the trade/candle).
+                buy_price = value
+                sell_price = value
+            else:
+                # After N: bid below and ask above -> the pair RESTS in the book
+                # and does not fill (order-book depth only).
+                buy_price = value - discount
+                sell_price = value + discount
 
             bp = api._fmt(buy_price, api._PRICE_Q)
             sp = api._fmt(sell_price, api._PRICE_Q)

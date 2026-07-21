@@ -122,6 +122,7 @@
   .flash{animation:flash .8s ease}
   @keyframes flash{from{background:rgba(91,140,255,.22)}}
   .err{color:var(--sell);font-size:11px;margin-top:8px;min-height:14px}
+  .warnNote{color:var(--gold);font-size:11px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -179,6 +180,7 @@
       </div>
       <div class="err" id="err"></div>
       <div class="muted" id="pacing" style="margin-top:8px"></div>
+      <div class="muted" id="fillNote" style="margin-top:6px"></div>
     </div>
 
     <!-- ACCOUNTS -->
@@ -219,6 +221,11 @@ const fmt = (n,d=5)=>Number(n).toLocaleString(undefined,{minimumFractionDigits:d
 let seenSeq = 0, maxBal = {UNP:600, USDT:80};
 
 $('#mode').onchange = e => $('#manualRoles').style.display = e.target.value==='manual'?'flex':'none';
+['low','high','discount','count','same_count','expire','window','align_candle'].forEach(id=>{
+  const el = document.getElementById(id);
+  el.addEventListener('input', ()=>pacing(readCfg()));
+  el.addEventListener('change', ()=>pacing(readCfg()));
+});
 
 function readCfg(){
   return {
@@ -231,9 +238,21 @@ function readCfg(){
   };
 }
 async function save(){ const c=readCfg(); await api('/api/config','POST',c); pacing(c); flashErr(''); }
-function pacing(c){ const iv=(c.window/Math.max(c.count,1)); $('#pacing').textContent=
-  `${c.count} pairs/round · one every ${iv.toFixed(2)}s · each expires in ${c.expire}s`
-  + (c.align_candle?' · synced to 1M candle open':'') + ' · continuous until Stop'; }
+function pacing(c){
+  const iv=(c.window/Math.max(c.count,1));
+  $('#pacing').textContent =
+    `${c.count} pairs/round · one every ${iv.toFixed(2)}s · each expires in ${c.expire}s`
+    + (c.align_candle?' · synced to 1M candle open':'') + ' · continuous until Stop';
+  // Fill behaviour: first N cross & fill; the rest rest as a bid/ask spread.
+  const span = Math.abs((+c.high) - (+c.low));
+  const d = +c.discount, minSafe = span/2;
+  const note = $('#pacing');
+  const fill = document.getElementById('fillNote');
+  const safe = d >= minSafe && d > 0;
+  fill.className = safe ? 'muted' : 'warnNote';
+  fill.textContent = `Fills: first ${c.same_count} cross → fill · after ${c.same_count} rest (bid −${d}, ask +${d}) → no fill`
+    + (safe ? ' ✓' : `  ⚠ discount ${d} < ${minSafe.toFixed(5)} (½ range) — some resting orders may cross & fill; raise discount to ≥ ${minSafe.toFixed(5)}`);
+}
 function flashErr(t){ $('#err').textContent=t||''; }
 
 $('#saveBtn').onclick = save;

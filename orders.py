@@ -6,8 +6,10 @@ each one as a LIMIT buy AND a LIMIT sell for UNPUSDT.
 Timing:  60s / 10 values = one value every 6 seconds (both APIs each tick).
 
 Pricing per item (values are sorted low -> high):
-  * first 3 items : SendBuy price = value            SendSell price = value
-  * items 4..10   : SendBuy price = value - 0.1      SendSell price = value
+  * first N items : SendBuy price = value            SendSell price = value
+                    (same price on both accounts -> they cross and FILL)
+  * items after N : SendBuy price = value - discount SendSell price = value + discount
+                    (bid below / ask above -> they REST in the book, no fill)
 
 Every order expires (auto-cancels if unfilled) after 60 seconds.
 
@@ -209,8 +211,12 @@ def send_orders(
     total = len(values)
 
     for i, value in enumerate(values):
-        buy_price = value if i < SAME_PRICE_COUNT else value - BUY_DISCOUNT
-        sell_price = value
+        if i < SAME_PRICE_COUNT:
+            buy_price = value          # same price on both sides -> crosses & fills
+            sell_price = value
+        else:
+            buy_price = value - BUY_DISCOUNT   # bid below  -> rests, no fill
+            sell_price = value + BUY_DISCOUNT  # ask above  -> rests, no fill
 
         buy_resp = send_buy(buyer_account, buy_price, quantity)
         sell_resp = send_sell(seller_account, sell_price, quantity)
