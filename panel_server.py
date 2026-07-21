@@ -53,6 +53,7 @@ STATE = {
         "same_count": 3,
         "expire": 60,
         "window": 60,          # seconds per round; interval = window / count
+        "align_candle": True,  # wait for the next 1M candle open before a round
         "mode": "auto",        # "auto" (roles from balances) or "manual"
         "buyer": 2,
         "seller": 1,
@@ -61,9 +62,12 @@ STATE = {
     "balances": None,
     "orders": [],              # our sent log, newest last
     "round": 0,
-    "phase": "idle",           # idle | running | stopping
+    "phase": "idle",           # idle | waiting | running | stopping
+    "candle_wait_until": None, # epoch of the next candle open we're waiting for
     "last_error": None,
 }
+
+CANDLE_SECONDS = 60            # 1M candle period (UTC-aligned minute boundary)
 
 _worker: threading.Thread | None = None
 _order_seq = 0
@@ -111,6 +115,29 @@ def _interruptible_sleep(seconds: float):
         time.sleep(0.15)
 
 
+def _wait_for_candle_open() -> bool:
+    """Block until the next 1M candle opens (next UTC minute boundary).
+
+    Candle opens land where epoch % 60 == 0 (second-of-minute is the same in
+    every timezone), so we sleep until then. Returns False if Stop was pressed
+    during the wait, True once the candle opens.
+    """
+    now = time.time()
+    target = now + (CANDLE_SECONDS - (now % CANDLE_SECONDS))
+    with _lock:
+        STATE["phase"] = "waiting"
+        STATE["candle_wait_until"] = target
+    while time.time() < target:
+        with _lock:
+            if not STATE["running"]:
+                STATE["candle_wait_until"] = None
+                return False
+        time.sleep(0.1)
+    with _lock:
+        STATE["candle_wait_until"] = None
+    return True
+
+
 def _refresh_balances_and_roles():
     bal = api.get_balances()
     with _lock:
@@ -140,8 +167,18 @@ def _worker_loop():
         with _lock:
             if not STATE["running"]:
                 STATE["phase"] = "idle"
+                STATE["candle_wait_until"] = None
                 return
             cfg = dict(STATE["config"])
+
+        # Align each round to the real 1M candle open, if enabled.
+        if cfg.get("align_candle", True):
+            if not _wait_for_candle_open():
+                continue  # Stop pressed during the wait -> loop re-checks & exits
+
+        with _lock:
+            if not STATE["running"]:
+                continue
             STATE["round"] += 1
             STATE["phase"] = "running"
 
@@ -247,6 +284,8 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ("count", "same_count", "expire", "window", "buyer", "seller"):
                     if k in data:
                         STATE["config"][k] = int(data[k])
+                if "align_candle" in data:
+                    STATE["config"]["align_candle"] = bool(data["align_candle"])
                 if STATE["config"]["mode"] == "manual":
                     STATE["roles"] = {
                         "buyer": STATE["config"]["buyer"],

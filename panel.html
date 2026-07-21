@@ -39,7 +39,17 @@
     font-weight:700;font-size:13px;border:1px solid var(--line);background:rgba(10,14,26,.5)}
   .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
   .pill.run .dot{background:var(--buy);box-shadow:0 0 0 0 rgba(34,211,138,.7);animation:pulse 1.4s infinite}
+  .pill.wait .dot{background:var(--acc);box-shadow:0 0 0 0 rgba(91,140,255,.7);animation:pulse 1.4s infinite}
+  .pill.wait{color:var(--acc)}
   .pill.stop .dot{background:var(--gold)}
+  /* toggle */
+  .toggle{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding-top:6px}
+  .toggle input{display:none}
+  .toggle .tk{width:42px;height:24px;border-radius:99px;background:rgba(255,255,255,.1);position:relative;transition:.2s;border:1px solid var(--line)}
+  .toggle .tk::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#c8d2ee;transition:.2s}
+  .toggle input:checked + .tk{background:linear-gradient(90deg,var(--acc),var(--buy))}
+  .toggle input:checked + .tk::after{left:20px;background:#fff}
+  .toggle span{font-size:13px}
   @keyframes pulse{70%{box-shadow:0 0 0 12px rgba(34,211,138,0)}100%{box-shadow:0 0 0 0 rgba(34,211,138,0)}}
   .chip{font-size:12px;color:var(--mut);padding:6px 12px;border:1px solid var(--line);border-radius:999px}
 
@@ -145,6 +155,11 @@
         <div class="fld"><label>Expire / order (s)</label><input id="expire" type="number" min="5" value="60"></div>
         <div class="fld"><label>Round window (s)</label><input id="window" type="number" min="5" value="60"></div>
       </div>
+      <div class="fld">
+        <label>Candle sync</label>
+        <label class="toggle"><input type="checkbox" id="align_candle" checked><span class="tk"></span>
+          <span>Wait for the next 1M candle open before each round</span></label>
+      </div>
       <div class="row">
         <div class="fld"><label>Role mode</label>
           <select id="mode"><option value="auto">Auto (by balances)</option><option value="manual">Manual</option></select>
@@ -211,12 +226,14 @@ function readCfg(){
     count:+$('#count').value, quantity:$('#quantity').value.trim(),
     discount:$('#discount').value.trim(), same_count:+$('#same_count').value,
     expire:+$('#expire').value, window:+$('#window').value,
+    align_candle:$('#align_candle').checked,
     mode:$('#mode').value, buyer:+$('#buyer').value, seller:+$('#seller').value
   };
 }
 async function save(){ const c=readCfg(); await api('/api/config','POST',c); pacing(c); flashErr(''); }
 function pacing(c){ const iv=(c.window/Math.max(c.count,1)); $('#pacing').textContent=
-  `${c.count} pairs/round · one every ${iv.toFixed(2)}s · each expires in ${c.expire}s · continuous until Stop`; }
+  `${c.count} pairs/round · one every ${iv.toFixed(2)}s · each expires in ${c.expire}s`
+  + (c.align_candle?' · synced to 1M candle open':'') + ' · continuous until Stop'; }
 function flashErr(t){ $('#err').textContent=t||''; }
 
 $('#saveBtn').onclick = save;
@@ -288,14 +305,26 @@ function renderRows(orders){
   seenSeq = orders.reduce((m,o)=>Math.max(m,o.seq),seenSeq);
 }
 
+let lastState = null;
+function renderStatus(){
+  const s = lastState; if(!s) return;
+  const st=$('#status'), running=s.running, phase=s.phase;
+  let cls='', txt='idle';
+  if(phase==='waiting'){
+    const rem = Math.max(0, (s.candle_wait_until||0) - Date.now()/1000);
+    cls=' wait'; txt='next 1M candle in '+rem.toFixed(1)+'s';
+  } else if(running){ cls=' run'; txt='running'; }
+  else if(phase==='stopping'){ cls=' stop'; txt='stopping'; }
+  st.className='pill'+cls;
+  $('#statusTxt').textContent = txt;
+}
+
 async function tick(){
   let s; try{ s = await api('/api/state'); }catch{ return; }
-  // status
-  const st=$('#status'), running=s.running, phase=s.phase;
-  st.className='pill'+(running?' run':phase==='stopping'?' stop':'');
-  $('#statusTxt').textContent = running?'running':phase==='stopping'?'stopping':'idle';
+  lastState = s;
+  renderStatus();
   $('#round').textContent = 'round '+s.round;
-  $('#startBtn').disabled = running; $('#stopBtn').disabled = !running;
+  $('#startBtn').disabled = s.running; $('#stopBtn').disabled = !s.running;
 
   // health
   $('#health').textContent = s.balances?.ok!==false ? 'health: online ●' : 'health: error';
@@ -310,6 +339,7 @@ async function tick(){
 }
 pacing(readCfg());
 tick(); setInterval(tick, 1500);
+setInterval(renderStatus, 100);   // smooth candle countdown between polls
 </script>
 </body>
 </html>
