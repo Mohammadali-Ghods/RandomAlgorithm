@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import threading
 import time
 from decimal import Decimal
@@ -49,10 +48,8 @@ STATE = {
         "low": "0.10000",
         "high": "0.11000",
         "count": 10,
-        "auto_count": False,   # random count per round, scaled to total balances
-        "count_max": 60,       # upper cap for the auto-count random pick
         "quantity": "20",
-        "discount": "0.005",
+        "discount": "0.001",
         "same_count": 3,
         "expire": 60,
         "window": 60,          # seconds per round; interval = window / count
@@ -68,7 +65,6 @@ STATE = {
     "phase": "idle",           # idle | waiting | running | stopping
     "candle_wait_until": None, # epoch of the next candle open we're waiting for
     "round_started_at": None,  # epoch when the current round began sending
-    "auto_count_value": None,  # the count auto-count picked for the last round
     "last_error": None,
 }
 
@@ -118,43 +114,6 @@ def _interruptible_sleep(seconds: float):
             if not STATE["running"]:
                 return
         time.sleep(0.15)
-
-
-def _capacity_from_balances(cfg, balances) -> int:
-    """How many order pairs the two accounts' TOTAL assets can back.
-
-    A buy pair costs ~ ref_price * quantity USDT; a sell needs quantity UNP.
-    Capacity is the smaller of what total USDT and total UNP (summed across
-    both accounts) can support. Returns 0 if balances are unavailable.
-    """
-    accounts = (balances or {}).get("accounts", {})
-    total_unp = api._free(accounts.get("1", {}), "UNP") + api._free(accounts.get("2", {}), "UNP")
-    total_usdt = api._free(accounts.get("1", {}), "USDT") + api._free(accounts.get("2", {}), "USDT")
-    try:
-        qty = Decimal(str(cfg["quantity"]))
-        low, high = Decimal(str(cfg["low"])), Decimal(str(cfg["high"]))
-    except Exception:
-        return 0
-    ref = (low + high) / 2
-    if qty <= 0 or ref <= 0:
-        return 0
-    cap_unp = total_unp / qty
-    cap_usdt = total_usdt / (ref * qty)
-    return int(min(cap_unp, cap_usdt))
-
-
-def _auto_count(cfg, balances) -> int:
-    """Random order count for a round, scaled to the accounts' total assets.
-
-    Picks a CSPRNG-random integer in [1, min(capacity, count_max)]. Falls back
-    to the manual count if balances/capacity can't be determined.
-    """
-    capacity = _capacity_from_balances(cfg, balances)
-    hard_max = max(1, int(cfg.get("count_max", 60)))
-    upper = min(capacity, hard_max)
-    if upper < 1:
-        return max(1, int(cfg.get("count", 1)))
-    return 1 + secrets.randbelow(upper)   # random 1..upper inclusive
 
 
 def _wait_for_candle_open() -> bool:
@@ -230,13 +189,7 @@ def _worker_loop():
             buyer = STATE["roles"]["buyer"] if cfg["mode"] == "auto" else cfg["buyer"]
             seller = STATE["roles"]["seller"] if cfg["mode"] == "auto" else cfg["seller"]
 
-        if cfg.get("auto_count"):
-            count = _auto_count(cfg, STATE["balances"])
-        else:
-            count = int(cfg["count"])
-        with _lock:
-            STATE["auto_count_value"] = count if cfg.get("auto_count") else None
-
+        count = int(cfg["count"])
         discount = Decimal(str(cfg["discount"]))
         same_count = int(cfg["same_count"])
         qty = cfg["quantity"]
@@ -338,12 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ("low", "high", "quantity", "discount", "mode"):
                     if k in data:
                         STATE["config"][k] = str(data[k])
-                for k in ("count", "count_max", "same_count", "expire", "window", "buyer", "seller"):
+                for k in ("count", "same_count", "expire", "window", "buyer", "seller"):
                     if k in data:
                         STATE["config"][k] = int(data[k])
-                for k in ("align_candle", "auto_count"):
-                    if k in data:
-                        STATE["config"][k] = bool(data[k])
+                if "align_candle" in data:
+                    STATE["config"]["align_candle"] = bool(data["align_candle"])
                 if STATE["config"]["mode"] == "manual":
                     STATE["roles"] = {
                         "buyer": STATE["config"]["buyer"],
