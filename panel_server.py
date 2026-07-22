@@ -43,14 +43,23 @@ PANEL_HTML = Path(__file__).with_name("panel.html")
 
 _lock = threading.Lock()
 
+# Exchange-specific bits are env-driven so one codebase serves both the MEXC
+# panel and its CoinW twin without any code change.
+EXCHANGE_NAME = os.environ.get("EXCHANGE_NAME", "MEXC")
+MIN_ORDER_USDT_ENV = os.environ.get("MIN_ORDER_USDT", "1.05")  # min order value + buffer
+
 STATE = {
     "running": False,
     "config": {
         "low": "0.10000",
         "high": "0.11000",
         "count": 10,
-        "quantity": "20",
-        "auto_quantity": False,  # random qty per order, scaled to total balances
+        "quantity": os.environ.get("PANEL_QUANTITY", "20"),
+        "auto_quantity": False,  # random qty per order, scaled to the round budget
+        # Per-round spend caps in USDT (0 = use live balances instead). For CoinW
+        # the sub-accounts read 0 and draw on a shared parent, so a cap is needed.
+        "budget_usdt": os.environ.get("BUDGET_USDT", "0"),
+        "budget_unp_usdt": os.environ.get("BUDGET_UNP_USDT", "0"),
         "discount": "0.005",
         "same_count": 3,
         "expire": 60,
@@ -59,6 +68,8 @@ STATE = {
         "mode": "auto",        # "auto" (roles from balances) or "manual"
         "buyer": 2,
         "seller": 1,
+        "exchange": EXCHANGE_NAME,
+        "min_order_usdt": MIN_ORDER_USDT_ENV,
     },
     "roles": {"buyer": 2, "seller": 1},
     "balances": None,
@@ -118,32 +129,56 @@ def _interruptible_sleep(seconds: float):
         time.sleep(0.15)
 
 
-MIN_ORDER_USDT = Decimal("1.05")   # keep price*qty above the ~1 USDT minimum
+MIN_ORDER_USDT = Decimal(MIN_ORDER_USDT_ENV)  # keep price*qty above the exchange min
 _Q01 = Decimal("0.01")             # quantity has up to 2 decimals
 
 
-def _auto_quantity(cfg, balances, count, low_price) -> Decimal:
-    """A CSPRNG-random quantity for one order, scaled to the accounts' TOTAL assets.
+def _budget_units(cfg, balances) -> Decimal:
+    """UNP-quantity a single round may move, as the smaller of the buy-side and
+    sell-side budgets.
 
-    Upper bound: the round's whole quantity budget divided by `count`, where the
-    budget is the smaller of what total UNP (for sells) and total USDT (for buys,
-    at mid price) can move -> a full round never exceeds the balances.
-    Lower bound: enough that price*qty clears the ~1 USDT minimum order value.
-    Falls back to the manual quantity if balances are unavailable.
+    Each side uses the LIVE total balance across both accounts, unless a manual
+    cap is configured (budget_usdt / budget_unp_usdt, both in USDT) — needed for
+    exchanges like CoinW whose sub-accounts report 0 and draw on a shared parent
+    balance. Returns 0 if the mid price is unavailable.
     """
     accounts = (balances or {}).get("accounts", {})
-    total_unp = api._free(accounts.get("1", {}), "UNP") + api._free(accounts.get("2", {}), "UNP")
-    total_usdt = api._free(accounts.get("1", {}), "USDT") + api._free(accounts.get("2", {}), "USDT")
+    live_unp = api._free(accounts.get("1", {}), "UNP") + api._free(accounts.get("2", {}), "UNP")
+    live_usdt = api._free(accounts.get("1", {}), "USDT") + api._free(accounts.get("2", {}), "USDT")
     try:
         low, high = Decimal(str(cfg["low"])), Decimal(str(cfg["high"]))
+        b_usdt = Decimal(str(cfg.get("budget_usdt", "0") or "0"))
+        b_unp_usdt = Decimal(str(cfg.get("budget_unp_usdt", "0") or "0"))
+    except Exception:
+        return Decimal(0)
+    ref = (low + high) / 2
+    if ref <= 0:
+        return Decimal(0)
+    eff_usdt = b_usdt if b_usdt > 0 else live_usdt              # buy-side USDT budget
+    eff_unp_units = (b_unp_usdt / ref) if b_unp_usdt > 0 else live_unp  # sell-side UNP budget
+    return min(eff_usdt / ref, eff_unp_units)
+
+
+def _cap_per_order(cfg, balances, count) -> Decimal:
+    """Max quantity for one order so a whole round stays within the budget.
+    Returns 0 when no cap applies (no budget set and balances unknown)."""
+    return (_budget_units(cfg, balances) / Decimal(max(count, 1))).quantize(_Q01, rounding=ROUND_DOWN)
+
+
+def _auto_quantity(cfg, balances, count, low_price) -> Decimal:
+    """A CSPRNG-random quantity for one order, scaled to the round's budget.
+
+    Upper bound: budget / count (see _budget_units). Lower bound: enough that
+    price*qty clears the exchange minimum order value. Falls back to the manual
+    quantity if the budget/mid price can't be determined.
+    """
+    try:
         lp = Decimal(str(low_price))
     except Exception:
         return Decimal(str(cfg["quantity"]))
-    ref = (low + high) / 2
-    if ref <= 0 or lp <= 0:
+    if lp <= 0:
         return Decimal(str(cfg["quantity"]))
-    budget_units = min(total_unp, total_usdt / ref)          # UNP-qty a round can move
-    max_q = (budget_units / Decimal(max(count, 1))).quantize(_Q01, rounding=ROUND_DOWN)
+    max_q = _cap_per_order(cfg, balances, count)
     min_q = (MIN_ORDER_USDT / lp).quantize(_Q01, rounding=ROUND_UP)
     if max_q <= min_q:
         return min_q
@@ -227,8 +262,16 @@ def _worker_loop():
         count = int(cfg["count"])
         discount = Decimal(str(cfg["discount"]))
         same_count = int(cfg["same_count"])
-        qty = cfg["quantity"]
         interval = float(cfg["window"]) / max(count, 1)
+
+        # Manual quantity: clamp down so a round never exceeds the budget cap
+        # (when one is set). Auto quantity handles this itself, per order.
+        qty = cfg["quantity"]
+        if not cfg.get("auto_quantity"):
+            cap = _cap_per_order(cfg, STATE["balances"], count)
+            if cap > 0:
+                manual = Decimal(str(cfg["quantity"]))
+                qty = api._fmt(min(manual, cap), api._QTY_Q)
 
         values = algorithm_a(cfg["low"], cfg["high"], count)
 
@@ -331,7 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/config":
             data = self._read_json()
             with _lock:
-                for k in ("low", "high", "quantity", "discount", "mode"):
+                for k in ("low", "high", "quantity", "discount", "mode",
+                          "budget_usdt", "budget_unp_usdt"):
                     if k in data:
                         STATE["config"][k] = str(data[k])
                 for k in ("count", "same_count", "expire", "window", "buyer", "seller"):

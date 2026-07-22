@@ -203,7 +203,7 @@ tbody tr{border-top:1px solid rgba(120,150,220,.1);animation:rowin .4s cubic-bez
   <header>
     <div class="brand">
       <div class="logo">E</div>
-      <div><h1>Exuno</h1><div class="sub">UNPUSDT · order-book training panel</div></div>
+      <div><h1>Exuno</h1><div class="sub" id="sub">UNPUSDT · order-book training panel</div></div>
     </div>
     <div class="hstat">
       <span class="chip" id="health">health <b class="online">●</b></span>
@@ -233,8 +233,12 @@ tbody tr{border-top:1px solid rgba(120,150,220,.1);animation:rowin .4s cubic-bez
       <div class="fld">
         <label>Auto quantity</label>
         <label class="toggle"><input type="checkbox" id="auto_quantity"><span class="tk"></span>
-          <span>Random each order, scaled to total UNP + USDT</span></label>
+          <span>Random each order, scaled to the round budget</span></label>
         <div class="note" id="qtyNote"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Max USDT / round (0 = use balance)</label><input id="budget_usdt" value="0"></div>
+        <div class="fld"><label>Max UNP $ / round (0 = use balance)</label><input id="budget_unp_usdt" value="0"></div>
       </div>
       <div class="row">
         <div class="fld"><label>Buy discount (after N)</label><input id="discount" value="0.005"></div>
@@ -311,6 +315,9 @@ tbody tr{border-top:1px solid rgba(120,150,220,.1);animation:rowin .4s cubic-bez
 const $=s=>document.querySelector(s);
 const api=(p,m,b)=>fetch(p,{method:m||'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 const fmt=(n,d=5)=>Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+// Free/available amount of an asset — MEXC uses "free", CoinW uses "available".
+const fv=node=>+((node&&(node.free??node.available))||0);
+const minOrderUsdt=()=>+(lastState?.config?.min_order_usdt||1.05);
 let seenSeq=0, mode='auto', lastState=null, maxBal={UNP:600,USDT:100};
 
 /* ripple on buttons */
@@ -329,10 +336,11 @@ $('#modeSeg').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
 function readCfg(){return{
   low:$('#low').value.trim(),high:$('#high').value.trim(),count:+$('#count').value,quantity:$('#quantity').value.trim(),
   auto_quantity:$('#auto_quantity').checked,
+  budget_usdt:$('#budget_usdt').value.trim(),budget_unp_usdt:$('#budget_unp_usdt').value.trim(),
   discount:$('#discount').value.trim(),same_count:+$('#same_count').value,expire:+$('#expire').value,window:+$('#window').value,
   align_candle:$('#align_candle').checked,mode,buyer:+$('#buyer').value,seller:+$('#seller').value};}
 
-['low','high','discount','count','same_count','expire','window','align_candle','auto_quantity','quantity'].forEach(id=>{
+['low','high','discount','count','same_count','expire','window','align_candle','auto_quantity','quantity','budget_usdt','budget_unp_usdt'].forEach(id=>{
   const el=document.getElementById(id);['input','change'].forEach(ev=>el.addEventListener(ev,()=>pacing(readCfg())));});
 
 async function save(){const c=readCfg();await api('/api/config','POST',c);pacing(c);$('#err').textContent='';}
@@ -344,21 +352,31 @@ function pacing(c){
   const iv=c.window/Math.max(c.count,1);
   $('#pacing').textContent=`${c.count} pairs/round · one every ${iv.toFixed(2)}s · expires ${c.expire}s`
     +(c.align_candle?' · synced to 1M candle':'')+' · loops until Stop';
-  // Auto-quantity: disable manual field, show the random range scaled to assets.
+  // Budget in UNP units for a round: manual caps (USDT) override live balances.
+  const accs=lastState?.balances?.accounts||{};
+  const bf=(n,a)=>fv(accs[n]?.assets?.[a]);
+  const tUNP=bf('1','UNP')+bf('2','UNP'),tUSDT=bf('1','USDT')+bf('2','USDT');
+  const ref=((+c.low)+(+c.high))/2;
+  const bUSDT=+c.budget_usdt||0,bUNP=+c.budget_unp_usdt||0;
+  const effUSDT=bUSDT>0?bUSDT:tUSDT, effUNPu=bUNP>0?(ref>0?bUNP/ref:0):tUNP;
+  const budget=(ref>0)?Math.min(effUSDT/ref,effUNPu):0;   // UNP units per round
+  const capped=(bUSDT>0||bUNP>0);
+  // Auto-quantity: disable manual field, show the random range.
   $('#quantity').disabled=c.auto_quantity;$('#quantity').style.opacity=c.auto_quantity?.45:1;
   const qn=$('#qtyNote');
   if(c.auto_quantity){
-    const accs=lastState?.balances?.accounts||{};
-    const f=(n,a)=>+((accs[n]?.assets?.[a]?.free)||0);
-    const tUNP=f('1','UNP')+f('2','UNP'),tUSDT=f('1','USDT')+f('2','USDT');
-    const ref=((+c.low)+(+c.high))/2,lowP=Math.max(1e-9,(+c.low)-(+c.discount));
-    const budget=(ref>0)?Math.min(tUNP,tUSDT/ref):0;
+    const lowP=Math.max(1e-9,(+c.low)-(+c.discount));
     const maxQ=Math.floor((budget/Math.max(c.count,1))*100)/100;
-    const minQ=Math.ceil((1.05/lowP)*100)/100;
+    const minQ=Math.ceil((minOrderUsdt()/lowP)*100)/100;
+    const src=capped?`caps $${bUSDT||'bal'} USDT / $${bUNP||'bal'} UNP`:`balances (UNP ${fmt(tUNP,2)}, USDT ${fmt(tUSDT,2)})`;
     qn.className='note';
     qn.textContent=(maxQ>minQ)
-      ? `Random ${minQ.toFixed(2)}–${maxQ.toFixed(2)} UNP/order · budget ≈ ${budget.toFixed(0)} UNP (total UNP ${fmt(tUNP,2)}, USDT ${fmt(tUSDT,2)})`
-      : `~${minQ.toFixed(2)} UNP/order (balances tight for ${c.count} orders)`;
+      ? `Random ${minQ.toFixed(2)}–${maxQ.toFixed(2)} UNP/order · round budget ≈ ${budget.toFixed(0)} UNP · from ${src}`
+      : `~${minQ.toFixed(2)} UNP/order (budget tight for ${c.count} orders) · from ${src}`;
+  } else if(capped){
+    const cap=Math.floor((budget/Math.max(c.count,1))*100)/100;
+    qn.className='note';
+    qn.textContent=`Manual qty capped to ≤ ${cap.toFixed(2)} UNP/order so a round stays within $${bUSDT||'bal'} USDT / $${bUNP||'bal'} UNP`;
   } else qn.textContent='';
   const span=Math.abs((+c.high)-(+c.low)),d=+c.discount,minSafe=span/2,safe=d>=minSafe&&d>0;
   const f=$('#fillNote');f.className='note'+(safe?'':' warn');
@@ -379,11 +397,11 @@ function animNum(el,to,dec){
 function balances(s){
   const accs=s.balances?.accounts||{},roles=s.roles||{};
   [1,2].forEach(n=>{
-    const a=accs[String(n)]?.assets||{};const unp=+(a.UNP?.free||0),usdt=+(a.USDT?.free||0);
+    const a=accs[String(n)]?.assets||{};const unp=fv(a.UNP),usdt=fv(a.USDT);
     maxBal.UNP=Math.max(maxBal.UNP,unp*1.08);maxBal.USDT=Math.max(maxBal.USDT,usdt*1.08);
   });
   const html=[1,2].map(n=>{
-    const a=accs[String(n)]?.assets||{};const unp=+(a.UNP?.free||0),usdt=+(a.USDT?.free||0);
+    const a=accs[String(n)]?.assets||{};const unp=fv(a.UNP),usdt=fv(a.USDT);
     const lu=+(a.UNP?.locked||0),ld=+(a.USDT?.locked||0);
     const role=roles.buyer===n?'buyer':roles.seller===n?'seller':'';
     const badge=role?`<span class="badge ${role}">${role.toUpperCase()}</span>`:'';
@@ -401,13 +419,13 @@ function balances(s){
   else{ // patch in place to keep count-up smooth
     [1,2].forEach(n=>{const a=accs[String(n)]?.assets||{};
       const bu=$(`#accs [data-a="${n}u"]`),bd=$(`#accs [data-a="${n}d"]`);
-      const unp=+(a.UNP?.free||0),usdt=+(a.USDT?.free||0);
+      const unp=fv(a.UNP),usdt=fv(a.USDT);
       if(bu){animNum(bu,unp,2);bu.closest('.asset').querySelector('.bar>i').style.width=Math.min(100,unp/maxBal.UNP*100)+'%';}
       if(bd){animNum(bd,usdt,2);bd.closest('.asset').querySelector('.bar>i').style.width=Math.min(100,usdt/maxBal.USDT*100)+'%';}});
     return;
   }
   [1,2].forEach(n=>{const a=accs[String(n)]?.assets||{};
-    animNum($(`#accs [data-a="${n}u"]`),+(a.UNP?.free||0),2);animNum($(`#accs [data-a="${n}d"]`),+(a.USDT?.free||0),2);});
+    animNum($(`#accs [data-a="${n}u"]`),fv(a.UNP),2);animNum($(`#accs [data-a="${n}d"]`),fv(a.USDT),2);});
 }
 
 function book(orders){
@@ -496,12 +514,25 @@ function renderStatus(){
   $('#ringVal').textContent=ringTxt;
 }
 
+let hydrated=false;
+function hydrate(c){   // populate inputs from the live server config, once
+  if(hydrated||!c)return;hydrated=true;
+  const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
+  ['low','high','count','quantity','discount','same_count','expire','window',
+   'budget_usdt','budget_unp_usdt','buyer','seller'].forEach(k=>set(k,c[k]));
+  $('#align_candle').checked=!!c.align_candle;$('#auto_quantity').checked=!!c.auto_quantity;
+  if(c.mode){mode=c.mode;$('#modeSeg').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v===c.mode));
+    $('#manualRoles').style.display=c.mode==='manual'?'flex':'none';}
+  pacing(readCfg());
+}
+
 async function tick(){
   let s;try{s=await api('/api/state');}catch{return;}
-  lastState=s;renderStatus();
+  lastState=s;hydrate(s.config);renderStatus();
   $('#round').textContent=s.round;
   $('#startBtn').disabled=s.running;$('#stopBtn').disabled=!s.running;
   $('#health').innerHTML='health '+(s.balances?.ok!==false?'<b class="online">●</b>':'<b style="color:var(--sell)">●</b>');
+  const ex=s.config?.exchange; if(ex) $('#sub').textContent=`UNPUSDT · ${ex} · order-book training panel`;
   balances(s);book(s.orders||[]);statsPatch(s.orders||[]);rows(s.orders||[]);
   pacing(readCfg());   // refresh auto-quantity estimate with live balances
 }

@@ -20,7 +20,14 @@ echo "==> (Re)starting container on $NETWORK (no host port published)"
 : "${EXUNO_TOKEN:?set EXUNO_TOKEN to the Exuno API bearer token}"
 docker rm -f "$NAME" 2>/dev/null || true
 docker run -d --name "$NAME" --network "$NETWORK" --restart unless-stopped \
-  -e EXUNO_TOKEN="$EXUNO_TOKEN" "$IMAGE"
+  -e EXUNO_TOKEN="$EXUNO_TOKEN" \
+  -e EXUNO_BASE_URL="${EXUNO_BASE_URL:-https://integrate.exuno.io}" \
+  -e EXCHANGE_NAME="${EXCHANGE_NAME:-MEXC}" \
+  -e MIN_ORDER_USDT="${MIN_ORDER_USDT:-1.05}" \
+  -e PANEL_QUANTITY="${PANEL_QUANTITY:-20}" \
+  -e BUDGET_USDT="${BUDGET_USDT:-0}" \
+  -e BUDGET_UNP_USDT="${BUDGET_UNP_USDT:-0}" \
+  "$IMAGE"
 
 echo "==> Waiting for the panel to answer on the docker network"
 sleep 4
