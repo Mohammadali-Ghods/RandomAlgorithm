@@ -133,18 +133,27 @@ MIN_ORDER_USDT = Decimal(MIN_ORDER_USDT_ENV)  # keep price*qty above the exchang
 _Q01 = Decimal("0.01")             # quantity has up to 2 decimals
 
 
-def _budget_units(cfg, balances) -> Decimal:
-    """UNP-quantity a single round may move, as the smaller of the buy-side and
-    sell-side budgets.
+_BUDGET_SAFETY = Decimal("0.90")   # leave headroom for fees / partial locks
 
-    Each side uses the LIVE total balance across both accounts, unless a manual
-    cap is configured (budget_usdt / budget_unp_usdt, both in USDT) — needed for
-    exchanges like CoinW whose sub-accounts report 0 and draw on a shared parent
-    balance. Returns 0 if the mid price is unavailable.
+
+def _budget_units(cfg, balances, buyer=None, seller=None) -> Decimal:
+    """UNP-quantity a single round may move — the smaller of the buy side and
+    the sell side.
+
+    Buy side  = the BUYER account's free USDT (the buyer spends USDT).
+    Sell side = the SELLER account's free UNP (the seller spends UNP).
+    Each side is capped by its manual budget (budget_usdt / budget_unp_usdt, in
+    USDT) when set, but NEVER exceeds the account's real free balance, so a round
+    can't be sized past what the account actually holds. A safety factor leaves
+    headroom. Returns 0 if the mid price is unavailable.
     """
     accounts = (balances or {}).get("accounts", {})
-    live_unp = api._free(accounts.get("1", {}), "UNP") + api._free(accounts.get("2", {}), "UNP")
-    live_usdt = api._free(accounts.get("1", {}), "USDT") + api._free(accounts.get("2", {}), "USDT")
+    b1, b2 = accounts.get("1", {}), accounts.get("2", {})
+    # Which account funds each side. Fall back to the union if roles unknown.
+    buyer_usdt = api._free({1: b1, 2: b2}.get(buyer, {}), "USDT") if buyer else \
+        api._free(b1, "USDT") + api._free(b2, "USDT")
+    seller_unp = api._free({1: b1, 2: b2}.get(seller, {}), "UNP") if seller else \
+        api._free(b1, "UNP") + api._free(b2, "UNP")
     try:
         low, high = Decimal(str(cfg["low"])), Decimal(str(cfg["high"]))
         b_usdt = Decimal(str(cfg.get("budget_usdt", "0") or "0"))
@@ -154,18 +163,20 @@ def _budget_units(cfg, balances) -> Decimal:
     ref = (low + high) / 2
     if ref <= 0:
         return Decimal(0)
-    eff_usdt = b_usdt if b_usdt > 0 else live_usdt              # buy-side USDT budget
-    eff_unp_units = (b_unp_usdt / ref) if b_unp_usdt > 0 else live_unp  # sell-side UNP budget
-    return min(eff_usdt / ref, eff_unp_units)
+    # cap by budget if set, then always by the real free balance
+    eff_usdt = min(b_usdt, buyer_usdt) if b_usdt > 0 else buyer_usdt
+    eff_unp = min(b_unp_usdt / ref, seller_unp) if b_unp_usdt > 0 else seller_unp
+    return min(eff_usdt / ref, eff_unp) * _BUDGET_SAFETY
 
 
-def _cap_per_order(cfg, balances, count) -> Decimal:
+def _cap_per_order(cfg, balances, count, buyer=None, seller=None) -> Decimal:
     """Max quantity for one order so a whole round stays within the budget.
     Returns 0 when no cap applies (no budget set and balances unknown)."""
-    return (_budget_units(cfg, balances) / Decimal(max(count, 1))).quantize(_Q01, rounding=ROUND_DOWN)
+    units = _budget_units(cfg, balances, buyer, seller)
+    return (units / Decimal(max(count, 1))).quantize(_Q01, rounding=ROUND_DOWN)
 
 
-def _auto_quantity(cfg, balances, count, low_price) -> Decimal:
+def _auto_quantity(cfg, balances, count, low_price, buyer=None, seller=None) -> Decimal:
     """A CSPRNG-random quantity for one order, scaled to the round's budget.
 
     Upper bound: budget / count (see _budget_units). Lower bound: enough that
@@ -178,7 +189,7 @@ def _auto_quantity(cfg, balances, count, low_price) -> Decimal:
         return Decimal(str(cfg["quantity"]))
     if lp <= 0:
         return Decimal(str(cfg["quantity"]))
-    max_q = _cap_per_order(cfg, balances, count)
+    max_q = _cap_per_order(cfg, balances, count, buyer, seller)
     min_q = (MIN_ORDER_USDT / lp).quantize(_Q01, rounding=ROUND_UP)
     if max_q <= min_q:
         return min_q
@@ -268,7 +279,7 @@ def _worker_loop():
         # (when one is set). Auto quantity handles this itself, per order.
         qty = cfg["quantity"]
         if not cfg.get("auto_quantity"):
-            cap = _cap_per_order(cfg, STATE["balances"], count)
+            cap = _cap_per_order(cfg, STATE["balances"], count, buyer, seller)
             if cap > 0:
                 manual = Decimal(str(cfg["quantity"]))
                 qty = api._fmt(min(manual, cap), api._QTY_Q)
@@ -296,7 +307,8 @@ def _worker_loop():
             if cfg.get("auto_quantity"):
                 low_price = min(buy_price, sell_price)
                 qty = api._fmt(
-                    _auto_quantity(cfg, STATE["balances"], count, low_price), api._QTY_Q
+                    _auto_quantity(cfg, STATE["balances"], count, low_price, buyer, seller),
+                    api._QTY_Q,
                 )
 
             bp = api._fmt(buy_price, api._PRICE_Q)
