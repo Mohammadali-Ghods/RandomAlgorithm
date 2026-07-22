@@ -432,7 +432,7 @@ function book(orders){
   const open=orders.filter(o=>o.status==='open');
   const agg=side=>{const m={};open.filter(o=>o.side===side).forEach(o=>m[o.price]=(m[o.price]||0)+ +o.quantity);
     return Object.entries(m).map(([px,qt])=>({px:+px,qt}));};
-  const bids=agg('BUY').sort((a,b)=>b.px-a.px).slice(0,8),asks=agg('SELL').sort((a,b)=>a.px-b.px).slice(0,8);
+  const bids=agg('BUY').sort((a,b)=>b.px-a.px).slice(0,25),asks=agg('SELL').sort((a,b)=>a.px-b.px).slice(0,25);
   const mq=Math.max(1,...bids.map(x=>x.qt),...asks.map(x=>x.qt));
   const rw=(x,d)=>`<div class="lvl" style="--dir:${d}"><span class="px">${fmt(x.px,5)}</span>
     <span class="lb"><i style="width:${x.qt/mq*100}%"></i></span><span class="qt">${fmt(x.qt,0)}</span></div>`;

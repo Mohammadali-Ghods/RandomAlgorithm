@@ -53,7 +53,7 @@ STATE = {
     "config": {
         "low": "0.10000",
         "high": "0.11000",
-        "count": 10,
+        "count": 15,
         "quantity": os.environ.get("PANEL_QUANTITY", "20"),
         "auto_quantity": False,  # random qty per order, scaled to the round budget
         # Per-round spend caps in USDT (0 = use live balances instead). For CoinW
@@ -62,9 +62,9 @@ STATE = {
         "budget_unp_usdt": os.environ.get("BUDGET_UNP_USDT", "0"),
         "discount": "0.005",
         "same_count": 3,
-        "expire": 60,
-        "window": 60,          # seconds per round; interval = window / count
-        "align_candle": True,  # wait for the next 1M candle open before a round
+        "expire": 30,          # resting depth orders auto-cancel after 30s
+        "window": 6,           # place all `count` pairs fast so depth coexists (0.4s apart at 15)
+        "align_candle": True,  # one round per 1M candle -> exactly `same_count` trades/candle
         "mode": "auto",        # "auto" (roles from balances) or "manual"
         "buyer": 2,
         "seller": 1,
