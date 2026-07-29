@@ -40,6 +40,17 @@ STUCK_SECS = int(os.environ.get("WATCHDOG_STUCK_SECS", "240"))
 PANEL_PORT = "8787"
 INTEG_PORT = "8080"
 
+# Opus-5 escalation: runs the `claude` CLI (headless, your logged-in account)
+# ONLY when a problem the watchdog can't mechanically fix is detected. It may
+# apply a SAFE sizing change (never touches price). Heavily throttled.
+OPUS_ENABLED = os.environ.get("OPUS_ENABLED", "1") not in ("0", "false", "")
+OPUS_MODEL = os.environ.get("OPUS_MODEL", "opus")
+OPUS_COOLDOWN = int(os.environ.get("OPUS_COOLDOWN", "900"))  # 15 min per problem
+# Config keys Opus is allowed to change — sizing/depth only, NEVER price
+# (low/high excluded on purpose, so it can't repeat the price incidents).
+OPUS_ALLOWED_KEYS = {"count", "quantity", "order_usd", "discount", "same_count", "auto_quantity"}
+_opus_last = {}
+
 
 # ---- Email alerting (creds loaded from watchdog.env if present) ----
 def _load_env():
@@ -100,6 +111,65 @@ def notify(subject, body, key):
     log(f"notify {'sent' if ok else 'NOT sent (email endpoint unset)'}: {subject}", level="mail")
 
 
+def opus_fix(market, panel, problem, context, key):
+    """Escalate to Opus 5 (via the `claude` CLI on the logged-in account) to
+    diagnose a problem the watchdog can't mechanically fix, apply a SAFE sizing
+    change if it recommends one, and email the result. Heavily throttled."""
+    if not OPUS_ENABLED:
+        return
+    t = time.time()
+    if t - _opus_last.get(key, 0) < OPUS_COOLDOWN:
+        return
+    _opus_last[key] = t
+
+    prompt = (
+        "You operate a UNPUSDT market-making bot. A problem was detected. Diagnose it "
+        "and, if a CONFIG change fixes it, propose one. Respond with STRICT JSON only "
+        "(no prose, no markdown), shape:\n"
+        '{"diagnosis": "<one sentence>", "action": "set_config" | "none", '
+        '"config": {optional: count(int), quantity(str), order_usd(str), discount(str), '
+        'same_count(int), auto_quantity(bool)}, "explanation": "<one sentence>"}\n'
+        "RULES: You may ONLY change sizing/depth keys above — you must NOT change price "
+        "(low/high) under any circumstances. To fix insufficient-balance or below-minimum "
+        "rejects, prefer lowering count or raising order_usd/quantity so each order clears "
+        "the exchange minimum and the round fits the balance. Keep count between 1 and 30.\n\n"
+        f"PROBLEM: {problem}\n\nCONTEXT (json):\n{json.dumps(context)[:3500]}"
+    )
+    rc, out, err = sh(["claude", "-p", prompt, "--model", OPUS_MODEL,
+                       "--output-format", "text"], timeout=180)
+    if rc != 0 or not out:
+        notify(f"{market}: Opus diagnosis call failed",
+               f"Problem: {problem}\nThe Opus CLI call failed: {err or 'no output'}", key=key + ":fail")
+        return
+
+    m = re.search(r"\{.*\}", out, re.S)
+    data = None
+    if m:
+        try:
+            data = json.loads(m.group(0))
+        except Exception:
+            data = None
+    if not isinstance(data, dict):
+        notify(f"{market}: Opus diagnosis (unstructured)",
+               f"Problem: {problem}\n\nOpus said:\n{out[:1500]}", key=key)
+        return
+
+    diagnosis = str(data.get("diagnosis", ""))[:400]
+    action = data.get("action", "none")
+    explanation = str(data.get("explanation", ""))[:400]
+    applied = "no change"
+    if action == "set_config" and isinstance(data.get("config"), dict):
+        safe = {k: v for k, v in data["config"].items() if k in OPUS_ALLOWED_KEYS}
+        if safe:
+            resp = probe(panel, PANEL_PORT, "/api/config", body=safe, timeout=6)
+            applied = (f"applied {safe}" if resp and resp.get("ok")
+                       else f"tried {safe} but apply FAILED")
+            log(f"{market}: opus {applied}", level="opus")
+    notify(f"{market}: Opus diagnosed & acted",
+           f"Problem: {problem}\n\nDiagnosis: {diagnosis}\nAction: {action} — {applied}\n"
+           f"Why: {explanation}", key=key)
+
+
 # market -> (panel container, integration container)
 TARGETS = {
     "market1": {"panel": "exuno-market-panel1", "integration": "mexc-integration"},
@@ -156,14 +226,24 @@ def health_status(name):
     return out if rc == 0 else ""
 
 
-def probe(container, port, path, method="GET", timeout=6):
-    """GET/POST an in-container HTTP endpoint via docker exec. Returns parsed
-    JSON dict, or None on failure."""
-    code = (
-        "import json,urllib.request as u;"
-        f"r=u.Request('http://127.0.0.1:{port}{path}',method='{method}');"
-        f"print(u.urlopen(r,timeout={timeout}).read().decode())"
-    )
+def probe(container, port, path, method="GET", body=None, timeout=6):
+    """GET/POST an in-container HTTP endpoint via docker exec. `body` (dict) sends
+    a JSON POST. Returns parsed JSON dict, or None on failure."""
+    if body is not None:
+        blit = repr(json.dumps(body))  # safe python string literal
+        code = (
+            "import json,urllib.request as u;"
+            f"d={blit}.encode();"
+            f"r=u.Request('http://127.0.0.1:{port}{path}',data=d,method='POST',"
+            "headers={'Content-Type':'application/json'});"
+            f"print(u.urlopen(r,timeout={timeout}).read().decode())"
+        )
+    else:
+        code = (
+            "import json,urllib.request as u;"
+            f"r=u.Request('http://127.0.0.1:{port}{path}',method='{method}');"
+            f"print(u.urlopen(r,timeout={timeout}).read().decode())"
+        )
     rc, out, _ = sh(["docker", "exec", container, "python3", "-c", code], timeout=timeout + 6)
     if rc != 0 or not out:
         return None
@@ -248,10 +328,9 @@ def check_market(market, cfg, st):
     rnd = state.get("round")
     desired = ms.get("desired", "unknown")
 
-    # Reject-storm detection: a running bot can be alive and advancing but have
-    # most of its orders REJECTED (bad sizing/balance/price). The watchdog can't
-    # fix a rejection reason (needs a config/balance change), but it emails the
-    # exact reason so it's caught immediately instead of silently bleeding.
+    # Reject-storm detection: a running bot that's alive and advancing but has
+    # most of its orders REJECTED (sizing/balance). Escalate to Opus 5, which
+    # diagnoses and applies a safe sizing fix, then emails the result.
     orders = state.get("orders") or []
     recent = orders[-30:]
     rej = [o for o in recent if o.get("status") == "rejected"]
@@ -260,15 +339,27 @@ def check_market(market, cfg, st):
         for o in reversed(rej):
             e = o.get("error") or ""
             m = re.search(r'error"\s*:\s*"([^"]+)', e)
-            reason = (m.group(1) if m else e)[:140]
+            reason = (m.group(1) if m else e)[:160]
             if reason:
                 break
-        notify(f"{market}: orders are REJECTING ({len(rej)}/{len(recent)} recent)",
-               f"What happened: the {market} bot is running but most recent orders are "
-               f"being rejected by the exchange.\nReason: {reason}\n\nThis is a sizing / "
-               f"balance / price config issue — it needs a config or balance adjustment "
-               f"(the watchdog can restart infra but cannot change trading params).",
-               key=f"reject:{market}")
+        accts = (state.get("balances") or {}).get("accounts", {})
+        ctx = {
+            "market": market, "exchange": state.get("config", {}).get("exchange"),
+            "reject_reason": reason,
+            "reject_rate": f"{len(rej)}/{len(recent)}",
+            "config": {k: state.get("config", {}).get(k) for k in
+                       ("count", "quantity", "order_usd", "discount", "same_count",
+                        "auto_quantity", "low", "high")},
+            "roles": state.get("roles"),
+            "balances": {a: {"UNP": (v.get("assets", {}).get("UNP", {}) or {}).get("free"),
+                             "USDT": (v.get("assets", {}).get("USDT", {}) or {}).get("free")}
+                         for a, v in accts.items()},
+        }
+        log(f"{market}: reject-storm ({len(rej)}/{len(recent)}) reason={reason!r} -> Opus", level="fix")
+        opus_fix(market, panel,
+                 f"{market} bot: {len(rej)}/{len(recent)} recent orders rejected. "
+                 f"Exchange reason: {reason}",
+                 ctx, key=f"reject:{market}")
 
     if running:
         ms["desired"] = "running"
