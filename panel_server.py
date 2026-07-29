@@ -306,36 +306,45 @@ def _worker_loop():
         same_count = int(cfg["same_count"])
         order_usd = Decimal(str(cfg.get("order_usd", "0") or "0"))  # fixed $ per order
 
-        # Fixed-$ orders: cap the round to what the buyer's USDT and the seller's
-        # UNP can actually fund, so it never rejects (places fewer when funds are
-        # low, up to `count`). No effect unless order_usd is set.
-        if order_usd > 0 and count > 0:
-            accts = (STATE["balances"] or {}).get("accounts", {})
-            buyer_usdt = api._free(accts.get(str(buyer), {}), "USDT")
-            seller_unp = api._free(accts.get(str(seller), {}), "UNP")
-            try:
-                ref = (Decimal(str(cfg["low"])) + Decimal(str(cfg["high"]))) / 2
-            except Exception:
-                ref = Decimal("0.1")
-            safety = Decimal("0.95")
-            max_buys = int((buyer_usdt * safety) / order_usd) if order_usd > 0 else count
-            max_sells = int((seller_unp * ref * safety) / order_usd) if (ref * order_usd) > 0 else count
-            fit = min(max_buys, max_sells)
-            if fit < count:
-                count = max(1, fit)
+        # --- Unified sizing ---------------------------------------------------
+        # Two hard rules: (1) every order value >= the exchange minimum, and
+        # (2) a whole round fits the buyer's USDT and the seller's UNP. We meet
+        # both by keeping per-order quantity at or above the minimum and reducing
+        # the *count* (never shrinking qty below the min, which is what caused the
+        # "minimum transaction volume" rejects).
+        try:
+            ref = (Decimal(str(cfg["low"])) + Decimal(str(cfg["high"]))) / 2
+        except Exception:
+            ref = Decimal("0.1")
+        if ref <= 0:
+            ref = Decimal("0.1")
+        min_qty = (MIN_ORDER_USDT / ref).quantize(_Q01, rounding=ROUND_UP)  # clears min value
+
+        if order_usd > 0:
+            per_order_usd = order_usd
+        elif cfg.get("auto_quantity"):
+            per_order_usd = MIN_ORDER_USDT
+        else:
+            per_order_usd = Decimal(str(cfg["quantity"])) * ref
+        per_order_usd = max(per_order_usd, MIN_ORDER_USDT)
+
+        accts = (STATE["balances"] or {}).get("accounts", {})
+        buyer_usdt = api._free(accts.get(str(buyer), {}), "USDT")
+        seller_unp = api._free(accts.get(str(seller), {}), "UNP")
+        budget_usd = min(buyer_usdt, seller_unp * ref) * Decimal("0.95")
+        if per_order_usd > 0 and budget_usd > 0:
+            max_count = int(budget_usd / per_order_usd)
+            count = max(1, min(count, max_count))
         with _lock:
             STATE["effective_count"] = count
 
         interval = float(cfg["window"]) / max(count, 1)
 
-        # Manual quantity: clamp down so a round never exceeds the budget cap
-        # (when one is set). Auto quantity handles this itself, per order.
+        # Manual quantity: floor at the minimum-value quantity (never below).
         qty = cfg["quantity"]
-        if not cfg.get("auto_quantity"):
-            cap = _cap_per_order(cfg, STATE["balances"], count, buyer, seller)
-            if cap > 0:
-                manual = Decimal(str(cfg["quantity"]))
-                qty = api._fmt(min(manual, cap), api._QTY_Q)
+        if not cfg.get("auto_quantity") and order_usd <= 0:
+            manual = Decimal(str(cfg["quantity"]))
+            qty = api._fmt(max(manual, min_qty), api._QTY_Q)
 
         values = algorithm_a(cfg["low"], cfg["high"], count)
 
@@ -356,21 +365,19 @@ def _worker_loop():
                 sell_price = value + discount
 
             # Random quantity (scaled to total assets) when enabled; the pair
-            # shares one qty so the first-N orders cross fully.
+            # shares one qty so the first-N orders cross fully. Floored at the
+            # minimum-value quantity so it never dips under the exchange minimum.
             if cfg.get("auto_quantity"):
                 low_price = min(buy_price, sell_price)
-                qty = api._fmt(
-                    _auto_quantity(cfg, STATE["balances"], count, low_price, buyer, seller),
-                    api._QTY_Q,
-                )
+                aq = _auto_quantity(cfg, STATE["balances"], count, low_price, buyer, seller)
+                qty = api._fmt(max(aq, min_qty), api._QTY_Q)
 
-            # Fixed order value: each order sized to exactly `order_usd` USDT, so
-            # qty = usd / price (per side, since buy/sell prices differ). Overrides
-            # the quantity above when set (> 0). Everything else is unchanged.
+            # Fixed order value: each order sized to `order_usd` USDT (qty = usd /
+            # price per side), but never below min_qty. Overrides qty when set.
             buy_qty = sell_qty = qty
             if order_usd > 0:
-                buy_qty = api._fmt(order_usd / buy_price, api._QTY_Q)
-                sell_qty = api._fmt(order_usd / sell_price, api._QTY_Q)
+                buy_qty = api._fmt(max(order_usd / buy_price, min_qty), api._QTY_Q)
+                sell_qty = api._fmt(max(order_usd / sell_price, min_qty), api._QTY_Q)
 
             bp = api._fmt(buy_price, api._PRICE_Q)
             sp = api._fmt(sell_price, api._PRICE_Q)

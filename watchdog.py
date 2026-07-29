@@ -22,6 +22,7 @@ Cloudflare or the public domains. Stop it with:  kill $(cat watchdog.pid)
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -246,6 +247,28 @@ def check_market(market, cfg, st):
     last_error = state.get("last_error")
     rnd = state.get("round")
     desired = ms.get("desired", "unknown")
+
+    # Reject-storm detection: a running bot can be alive and advancing but have
+    # most of its orders REJECTED (bad sizing/balance/price). The watchdog can't
+    # fix a rejection reason (needs a config/balance change), but it emails the
+    # exact reason so it's caught immediately instead of silently bleeding.
+    orders = state.get("orders") or []
+    recent = orders[-30:]
+    rej = [o for o in recent if o.get("status") == "rejected"]
+    if running and len(recent) >= 10 and len(rej) >= len(recent) * 0.5:
+        reason = ""
+        for o in reversed(rej):
+            e = o.get("error") or ""
+            m = re.search(r'error"\s*:\s*"([^"]+)', e)
+            reason = (m.group(1) if m else e)[:140]
+            if reason:
+                break
+        notify(f"{market}: orders are REJECTING ({len(rej)}/{len(recent)} recent)",
+               f"What happened: the {market} bot is running but most recent orders are "
+               f"being rejected by the exchange.\nReason: {reason}\n\nThis is a sizing / "
+               f"balance / price config issue — it needs a config or balance adjustment "
+               f"(the watchdog can restart infra but cannot change trading params).",
+               key=f"reject:{market}")
 
     if running:
         ms["desired"] = "running"
