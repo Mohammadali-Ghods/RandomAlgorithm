@@ -233,7 +233,13 @@ def _refresh_balances_and_roles():
             STATE["balances"] = bal
         mode = STATE["config"]["mode"]
     if bal.get("ok") is not False and mode == "auto":
-        roles = api.decide_roles(bal)
+        with _lock:
+            low, high = STATE["config"]["low"], STATE["config"]["high"]
+        try:
+            ref = (Decimal(str(low)) + Decimal(str(high))) / 2
+        except Exception:
+            ref = Decimal("0.1")
+        roles = api.decide_roles(bal, ref_price=ref)
         with _lock:
             STATE["roles"] = {"buyer": roles["buyer"], "seller": roles["seller"]}
 

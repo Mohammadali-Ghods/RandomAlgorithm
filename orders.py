@@ -115,15 +115,18 @@ def _free(account_blob: dict, asset: str) -> Decimal:
         return Decimal(0)
 
 
-def decide_roles(balances: dict) -> dict:
+def decide_roles(balances: dict, ref_price="0.1") -> dict:
     """Pick which account buys and which sells, from the live balances.
 
-    Rule: the account with more free USDT is the BUYER (it spends USDT), and the
-    account with more free UNP is the SELLER (it spends UNP). USDT decides the
-    buyer first — so the buyer always holds the larger USDT balance and can
-    afford to buy. If the same account leads on BOTH assets, it stays the buyer
-    (its USDT lead is what matters for buying) and the other account is seller.
-    Re-evaluated every round, so roles swap automatically as balances shift.
+    The BUYER spends USDT, the SELLER spends UNP. With two accounts there are
+    only two possible assignments; we choose the one that best FUNDS BOTH roles
+    — i.e. maximizes min(buyer's USDT, seller's UNP valued in USDT). In the
+    normal "crossed" case (one USDT-rich, one UNP-rich) this is exactly
+    "more USDT -> buyer, more UNP -> seller". When one account holds more of
+    BOTH, it correctly takes the role its larger asset serves and the other
+    account gets the role it can actually fund (avoids handing the seller role
+    to a UNP-poor account). Re-evaluated every round, so roles swap as balances
+    shift. `ref_price` converts UNP to USDT-value for the comparison.
     """
     accounts = balances.get("accounts", {})
     b1 = accounts.get("1") or accounts.get(1) or {}
@@ -131,14 +134,19 @@ def decide_roles(balances: dict) -> dict:
 
     usdt1, usdt2 = _free(b1, "USDT"), _free(b2, "USDT")
     unp1, unp2 = _free(b1, "UNP"), _free(b2, "UNP")
+    try:
+        px = Decimal(str(ref_price))
+    except Exception:
+        px = Decimal("0.1")
 
-    buyer = 1 if usdt1 >= usdt2 else 2      # more USDT -> buyer (decides first)
-    seller = 1 if unp1 >= unp2 else 2       # more UNP  -> seller
-
-    if buyer == seller:
-        # Same account leads on both -> keep it as BUYER (USDT priority),
-        # the other account takes the seller role.
-        seller = 2 if buyer == 1 else 1
+    # Two options; score each by how well BOTH roles are funded.
+    #   A: buyer=1, seller=2   B: buyer=2, seller=1
+    feas_A = min(usdt1, unp2 * px)
+    feas_B = min(usdt2, unp1 * px)
+    if feas_A >= feas_B:
+        buyer, seller = 1, 2
+    else:
+        buyer, seller = 2, 1
 
     return {
         "buyer": buyer,
