@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,63 @@ STATEFILE = os.path.join(HERE, "watchdog_state.json")
 INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "30"))
 PANEL_PORT = "8787"
 INTEG_PORT = "8080"
+
+
+# ---- Email alerting (creds loaded from watchdog.env if present) ----
+def _load_env():
+    path = os.path.join(HERE, "watchdog.env")
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env()
+EMAIL = {
+    "endpoint": os.environ.get("CF_EMAIL_ENDPOINT", ""),   # URL that actually sends
+    "token": os.environ.get("CF_EMAIL_TOKEN", ""),
+    "account": os.environ.get("CF_ACCOUNT_ID", ""),
+    "from": os.environ.get("EMAIL_FROM", "info@exuno.io"),
+    "to": os.environ.get("EMAIL_TO", "info@botify.trade"),
+}
+_notify_last = {}
+NOTIFY_COOLDOWN = int(os.environ.get("NOTIFY_COOLDOWN", "600"))  # 10 min per key
+
+
+def send_email(subject, body):
+    """POST the alert to the configured sender endpoint. Returns True on success.
+    Payload is the common {from,to,subject,text}; adjust to the real sender."""
+    if not EMAIL["endpoint"]:
+        return False
+    payload = json.dumps({
+        "from": EMAIL["from"], "to": EMAIL["to"],
+        "subject": subject, "text": body, "account_id": EMAIL["account"],
+    }).encode()
+    req = urllib.request.Request(
+        EMAIL["endpoint"], data=payload, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {EMAIL['token']}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+        return True
+    except Exception as e:
+        log(f"email send failed: {e}", level="warn")
+        return False
+
+
+def notify(subject, body, key):
+    """Email a human, throttled so the same issue isn't spammed."""
+    t = time.time()
+    if t - _notify_last.get(key, 0) < NOTIFY_COOLDOWN:
+        return
+    _notify_last[key] = t
+    ok = send_email(f"[bot-watchdog] {subject}", body + f"\n\n-- {now()} --")
+    log(f"notify {'sent' if ok else 'NOT sent (email endpoint unset)'}: {subject}", level="mail")
+
 
 # market -> (panel container, integration container)
 TARGETS = {
@@ -59,6 +117,9 @@ def log(msg, level="info"):
 def alert(msg):
     # Something the watchdog could not auto-fix — surfaced for a human / Opus.
     log("ALERT (needs attention): " + msg, level="ALERT")
+    notify("PROBLEM the watchdog could not auto-fix",
+           f"What happened:\n  {msg}\n\nThe watchdog tried to remediate but it did "
+           f"not recover. Manual / Opus attention needed.", key="alert:" + msg[:40])
 
 
 def sh(args, timeout=25):
@@ -147,6 +208,11 @@ def check_market(market, cfg, st):
             log(f"{market}: integration {integ} is UNHEALTHY (hung) -> restart", level="fix")
             restart(integ)
             time.sleep(4)  # next cycle re-verifies once it leaves 'starting'
+            notify(f"{market}: integration API was hung — auto-restarted",
+                   f"What happened: the {integ} container's healthcheck went UNHEALTHY "
+                   f"(the exchange-integration API stopped responding).\n"
+                   f"How it was fixed: the watchdog restarted the {integ} container.",
+                   key=f"integ:{integ}")
 
     # ---- 2. Panel container ----
     if not container_running(panel):
@@ -186,6 +252,12 @@ def check_market(market, cfg, st):
             after = probe(panel, PANEL_PORT, "/api/state", timeout=6) or {}
             if after.get("running"):
                 log(f"{market}: bot restored to running (round {after.get('round')})")
+                notify(f"{market}: bot was interrupted — auto-restarted",
+                       f"What happened: the {panel} panel container was recycled "
+                       f"(crash/restart), which stopped the running bot.\n"
+                       f"How it was fixed: the watchdog started the bot again and "
+                       f"confirmed it is running (round {after.get('round')}).",
+                       key=f"botrestore:{market}")
             else:
                 alert(f"{market}: tried to restart bot but it did not come up running")
         elif last_error:
@@ -196,6 +268,11 @@ def check_market(market, cfg, st):
             after = probe(panel, PANEL_PORT, "/api/state", timeout=6) or {}
             if after.get("running"):
                 log(f"{market}: bot restarted OK")
+                notify(f"{market}: bot had errored and stopped — auto-restarted",
+                       f"What happened: the {market} bot stopped with an error: {last_error!r}.\n"
+                       f"How it was fixed: the watchdog restarted the bot and confirmed "
+                       f"it is running again.",
+                       key=f"boterr:{market}")
             else:
                 alert(f"{market}: bot restart did not take; error was {last_error!r}")
         else:

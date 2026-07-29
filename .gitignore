@@ -5,3 +5,4 @@ __pycache__/
 watchdog.log
 watchdog.pid
 watchdog_state.json
+watchdog.env
