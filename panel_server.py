@@ -60,6 +60,7 @@ STATE = {
         "high": "0.11000",
         "count": 15,
         "quantity": os.environ.get("PANEL_QUANTITY", "20"),
+        "order_usd": os.environ.get("ORDER_USD", "0"),  # >0 => each order sized to exactly this USDT value (qty = usd/price)
         "auto_quantity": False,  # random qty per order, scaled to the round budget
         # Per-round spend caps in USDT (0 = use live balances instead). For CoinW
         # the sub-accounts read 0 and draw on a shared parent, so a cap is needed.
@@ -278,6 +279,7 @@ def _worker_loop():
         count = int(cfg["count"])
         discount = Decimal(str(cfg["discount"]))
         same_count = int(cfg["same_count"])
+        order_usd = Decimal(str(cfg.get("order_usd", "0") or "0"))  # fixed $ per order
         interval = float(cfg["window"]) / max(count, 1)
 
         # Manual quantity: clamp down so a round never exceeds the budget cap
@@ -316,6 +318,14 @@ def _worker_loop():
                     api._QTY_Q,
                 )
 
+            # Fixed order value: each order sized to exactly `order_usd` USDT, so
+            # qty = usd / price (per side, since buy/sell prices differ). Overrides
+            # the quantity above when set (> 0). Everything else is unchanged.
+            buy_qty = sell_qty = qty
+            if order_usd > 0:
+                buy_qty = api._fmt(order_usd / buy_price, api._QTY_Q)
+                sell_qty = api._fmt(order_usd / sell_price, api._QTY_Q)
+
             bp = api._fmt(buy_price, api._PRICE_Q)
             sp = api._fmt(sell_price, api._PRICE_Q)
 
@@ -329,10 +339,10 @@ def _worker_loop():
                     STATE["phase"] = "stopping"
                 break
 
-            buy_resp = api.send_buy(buyer, bp, qty)
-            _record("BUY", buyer, bp, qty, buy_resp)
-            sell_resp = api.send_sell(seller, sp, qty)
-            _record("SELL", seller, sp, qty, sell_resp)
+            buy_resp = api.send_buy(buyer, bp, buy_qty)
+            _record("BUY", buyer, bp, buy_qty, buy_resp)
+            sell_resp = api.send_sell(seller, sp, sell_qty)
+            _record("SELL", seller, sp, sell_qty, sell_resp)
 
             _merge_live_statuses()
             _refresh_balances_and_roles()
@@ -416,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
             with _lock:
                 for k in ("low", "high", "quantity", "discount", "mode",
-                          "budget_usdt", "budget_unp_usdt"):
+                          "budget_usdt", "budget_unp_usdt", "order_usd"):
                     if k in data:
                         STATE["config"][k] = str(data[k])
                 for k in ("count", "same_count", "expire", "window", "buyer", "seller"):
