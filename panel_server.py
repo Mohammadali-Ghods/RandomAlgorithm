@@ -286,6 +286,27 @@ def _worker_loop():
         discount = Decimal(str(cfg["discount"]))
         same_count = int(cfg["same_count"])
         order_usd = Decimal(str(cfg.get("order_usd", "0") or "0"))  # fixed $ per order
+
+        # Fixed-$ orders: cap the round to what the buyer's USDT and the seller's
+        # UNP can actually fund, so it never rejects (places fewer when funds are
+        # low, up to `count`). No effect unless order_usd is set.
+        if order_usd > 0 and count > 0:
+            accts = (STATE["balances"] or {}).get("accounts", {})
+            buyer_usdt = api._free(accts.get(str(buyer), {}), "USDT")
+            seller_unp = api._free(accts.get(str(seller), {}), "UNP")
+            try:
+                ref = (Decimal(str(cfg["low"])) + Decimal(str(cfg["high"]))) / 2
+            except Exception:
+                ref = Decimal("0.1")
+            safety = Decimal("0.95")
+            max_buys = int((buyer_usdt * safety) / order_usd) if order_usd > 0 else count
+            max_sells = int((seller_unp * ref * safety) / order_usd) if (ref * order_usd) > 0 else count
+            fit = min(max_buys, max_sells)
+            if fit < count:
+                count = max(1, fit)
+        with _lock:
+            STATE["effective_count"] = count
+
         interval = float(cfg["window"]) / max(count, 1)
 
         # Manual quantity: clamp down so a round never exceeds the budget cap
