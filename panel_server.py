@@ -37,6 +37,11 @@ HOST = os.environ.get("PANEL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PANEL_PORT", "8787"))
 PANEL_HTML = Path(__file__).with_name("panel.html")
 
+# Hard price-sanity band. Any low/high outside this is rejected so a typo like
+# "1400" (UNP really trades ~0.10) can never be sent to the exchange again.
+PRICE_MIN = float(os.environ.get("PRICE_MIN", "0.01"))
+PRICE_MAX = float(os.environ.get("PRICE_MAX", "1.0"))
+
 # ---------------------------------------------------------------------------#
 # Shared state                                                               #
 # ---------------------------------------------------------------------------#
@@ -314,6 +319,16 @@ def _worker_loop():
             bp = api._fmt(buy_price, api._PRICE_Q)
             sp = api._fmt(sell_price, api._PRICE_Q)
 
+            # Defense-in-depth: never place an order at an insane price.
+            if not (PRICE_MIN <= float(bp) <= PRICE_MAX and PRICE_MIN <= float(sp) <= PRICE_MAX):
+                with _lock:
+                    STATE["last_error"] = (
+                        f"blocked order out of price band: buy {bp} / sell {sp} "
+                        f"(allowed [{PRICE_MIN}, {PRICE_MAX}])")
+                    STATE["running"] = False   # halt rather than place bad orders
+                    STATE["phase"] = "stopping"
+                break
+
             buy_resp = api.send_buy(buyer, bp, qty)
             _record("BUY", buyer, bp, qty, buy_resp)
             sell_resp = api.send_sell(seller, sp, qty)
@@ -385,6 +400,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/api/config":
             data = self._read_json()
+            # Reject any price outside the sanity band BEFORE applying anything,
+            # so one bad field can't get partially saved.
+            for k in ("low", "high"):
+                if k in data:
+                    try:
+                        v = float(data[k])
+                    except Exception:
+                        self._send_json({"ok": False, "error": f"{k} is not a number"}, 400)
+                        return
+                    if not (PRICE_MIN <= v <= PRICE_MAX):
+                        self._send_json({"ok": False, "error":
+                            f"{k}={v} is outside the safe price band "
+                            f"[{PRICE_MIN}, {PRICE_MAX}] — refused (UNP trades ~0.10)"}, 400)
+                        return
             with _lock:
                 for k in ("low", "high", "quantity", "discount", "mode",
                           "budget_usdt", "budget_unp_usdt"):
