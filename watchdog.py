@@ -49,10 +49,13 @@ def _load_env():
 
 
 _load_env()
+_acc = os.environ.get("CF_ACCOUNT_ID", "")
 EMAIL = {
-    "endpoint": os.environ.get("CF_EMAIL_ENDPOINT", ""),   # URL that actually sends
+    # Cloudflare email-sending API; endpoint derives from the account id.
+    "endpoint": os.environ.get("CF_EMAIL_ENDPOINT")
+    or (f"https://api.cloudflare.com/client/v4/accounts/{_acc}/email/sending/send" if _acc else ""),
     "token": os.environ.get("CF_EMAIL_TOKEN", ""),
-    "account": os.environ.get("CF_ACCOUNT_ID", ""),
+    "account": _acc,
     "from": os.environ.get("EMAIL_FROM", "info@exuno.io"),
     "to": os.environ.get("EMAIL_TO", "info@botify.trade"),
 }
@@ -63,11 +66,11 @@ NOTIFY_COOLDOWN = int(os.environ.get("NOTIFY_COOLDOWN", "600"))  # 10 min per ke
 def send_email(subject, body):
     """POST the alert to the configured sender endpoint. Returns True on success.
     Payload is the common {from,to,subject,text}; adjust to the real sender."""
-    if not EMAIL["endpoint"]:
+    if not EMAIL["endpoint"] or not EMAIL["token"]:
         return False
     payload = json.dumps({
-        "from": EMAIL["from"], "to": EMAIL["to"],
-        "subject": subject, "text": body, "account_id": EMAIL["account"],
+        "to": EMAIL["to"], "from": EMAIL["from"],
+        "subject": subject, "text": body,
     }).encode()
     req = urllib.request.Request(
         EMAIL["endpoint"], data=payload, method="POST",
