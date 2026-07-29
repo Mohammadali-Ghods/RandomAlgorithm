@@ -256,6 +256,25 @@ def _merge_live_statuses():
                 rec["status"] = live_o.get("status", rec["status"])
 
 
+def _worker_supervisor():
+    """Runs the worker loop and RESTARTS it if it ever crashes, so an unexpected
+    exception can never leave the bot frozen with running=True. Exits cleanly
+    only when running goes False."""
+    while True:
+        with _lock:
+            if not STATE["running"]:
+                STATE["phase"] = "idle"
+                STATE["candle_wait_until"] = None
+                return
+        try:
+            _worker_loop()
+            return  # clean exit (running became False)
+        except Exception as e:
+            with _lock:
+                STATE["last_error"] = f"worker crashed, auto-restarting: {type(e).__name__}: {e}"
+            time.sleep(2)  # brief backoff, then the loop re-enters _worker_loop
+
+
 def _worker_loop():
     while True:
         with _lock:
@@ -492,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE["running"] = True
             STATE["last_error"] = None
         if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_worker_loop, daemon=True)
+            _worker = threading.Thread(target=_worker_supervisor, daemon=True)
             _worker.start()
 
 

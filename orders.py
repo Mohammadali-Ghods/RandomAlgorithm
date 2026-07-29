@@ -67,9 +67,14 @@ def _get(path: str) -> dict:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "status": exc.code, "error": exc.read().decode()}
-    except urllib.error.URLError as exc:
-        return {"ok": False, "error": str(exc.reason)}
+        try:
+            return {"ok": False, "status": exc.code, "error": exc.read().decode()}
+        except Exception:
+            return {"ok": False, "status": exc.code, "error": "http error"}
+    except Exception as exc:
+        # Catch-all (URLError, IncompleteRead, JSON errors, resets) so a bad read
+        # NEVER propagates up and kills the worker thread.
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def get_balances() -> dict:
@@ -175,9 +180,12 @@ def _post(path: str, body: dict) -> dict:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "status": exc.code, "error": exc.read().decode()}
-    except urllib.error.URLError as exc:
-        return {"ok": False, "error": str(exc.reason)}
+        try:
+            return {"ok": False, "status": exc.code, "error": exc.read().decode()}
+        except Exception:
+            return {"ok": False, "status": exc.code, "error": "http error"}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _fmt(value: Decimal, quantum: Decimal) -> str:

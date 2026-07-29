@@ -33,6 +33,9 @@ LOG = os.path.join(HERE, "watchdog.log")
 PIDFILE = os.path.join(HERE, "watchdog.pid")
 STATEFILE = os.path.join(HERE, "watchdog_state.json")
 INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "30"))
+# A running bot whose round hasn't advanced in this long is considered FROZEN
+# (worker thread died). Must exceed the round cadence (~60s candle sync).
+STUCK_SECS = int(os.environ.get("WATCHDOG_STUCK_SECS", "240"))
 PANEL_PORT = "8787"
 INTEG_PORT = "8080"
 
@@ -246,6 +249,33 @@ def check_market(market, cfg, st):
 
     if running:
         ms["desired"] = "running"
+        # Frozen-bot detection: `running` can stay True even if the worker thread
+        # died, leaving the round stuck. Track round progress; if it hasn't moved
+        # for STUCK_SECS (well beyond the ~60s candle cadence), it's stuck ->
+        # stop+start the bot to revive it.
+        if rnd != ms.get("last_round"):
+            ms["last_round"] = rnd
+            ms["last_round_ts"] = time.time()
+        else:
+            frozen = time.time() - ms.get("last_round_ts", time.time())
+            if frozen > STUCK_SECS:
+                log(f"{market}: bot FROZEN (running=True but round stuck at {rnd} for "
+                    f"{int(frozen)}s) -> stop+start", level="fix")
+                probe(panel, PANEL_PORT, "/api/stop", method="POST", timeout=6)
+                time.sleep(2)
+                probe(panel, PANEL_PORT, "/api/start", method="POST", timeout=6)
+                time.sleep(3)
+                after = probe(panel, PANEL_PORT, "/api/state", timeout=6) or {}
+                ms["last_round"] = after.get("round")
+                ms["last_round_ts"] = time.time()
+                notify(f"{market}: bot was FROZEN — auto-revived",
+                       f"What happened: the {market} bot showed running=True but its round "
+                       f"was stuck at {rnd} for {int(frozen)}s (worker thread had died).\n"
+                       f"How it was fixed: the watchdog stopped and restarted the bot; it is "
+                       f"now at round {after.get('round')}, running={after.get('running')}.",
+                       key=f"frozen:{market}")
+                if not after.get("running"):
+                    alert(f"{market}: tried to revive frozen bot but it is not running")
     else:
         if panel_restarted and desired == "running":
             # Container was recycled under us -> restore the bot we were running.
