@@ -27,6 +27,7 @@ docker run -d --name "$NAME" --network "$NETWORK" --restart unless-stopped \
   -e PANEL_QUANTITY="${PANEL_QUANTITY:-20}" \
   -e BUDGET_USDT="${BUDGET_USDT:-0}" \
   -e BUDGET_UNP_USDT="${BUDGET_UNP_USDT:-0}" \
+  -e PANEL_APP="${PANEL_APP:-panel_server.py}" \
   "$IMAGE"
 
 echo "==> Waiting for the panel to answer on the docker network"

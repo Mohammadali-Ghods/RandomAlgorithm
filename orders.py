@@ -92,6 +92,16 @@ def get_order(order_id: str) -> dict:
     return _get(f"/orders/{order_id}")
 
 
+def cancel_order(order_id: str) -> dict:
+    """Cancel a single open order by id."""
+    return _post("/Cancel", {"id": order_id})
+
+
+def cancel_all(account: int) -> dict:
+    """Cancel every open order on an account (whole UNPUSDT book for it)."""
+    return _post("/CancelAll", {"account": account})
+
+
 def _free(account_blob: dict, asset: str) -> Decimal:
     """Free (available) amount of an asset from one account's balance blob:
     { "account": n, "ok": true, "assets": { "UNP": {"free": ...}, ... } }.
