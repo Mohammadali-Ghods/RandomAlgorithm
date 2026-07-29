@@ -108,10 +108,12 @@ def _free(account_blob: dict, asset: str) -> Decimal:
 def decide_roles(balances: dict) -> dict:
     """Pick which account buys and which sells, from the live balances.
 
-    A buyer spends USDT to acquire UNP -> give BUY to the account with more
-    free USDT.  A seller gives up UNP for USDT -> give SELL to the account with
-    more free UNP.  If one account wins both, it takes the role it is richer in
-    and the other account gets the remaining role.
+    Rule: the account with more free USDT is the BUYER (it spends USDT), and the
+    account with more free UNP is the SELLER (it spends UNP). USDT decides the
+    buyer first — so the buyer always holds the larger USDT balance and can
+    afford to buy. If the same account leads on BOTH assets, it stays the buyer
+    (its USDT lead is what matters for buying) and the other account is seller.
+    Re-evaluated every round, so roles swap automatically as balances shift.
     """
     accounts = balances.get("accounts", {})
     b1 = accounts.get("1") or accounts.get(1) or {}
@@ -120,19 +122,13 @@ def decide_roles(balances: dict) -> dict:
     usdt1, usdt2 = _free(b1, "USDT"), _free(b2, "USDT")
     unp1, unp2 = _free(b1, "UNP"), _free(b2, "UNP")
 
-    buyer = 1 if usdt1 >= usdt2 else 2      # more USDT -> buyer
+    buyer = 1 if usdt1 >= usdt2 else 2      # more USDT -> buyer (decides first)
     seller = 1 if unp1 >= unp2 else 2       # more UNP  -> seller
 
     if buyer == seller:
-        # One account leads on both assets; split so both roles are staffed.
-        other = 2 if buyer == 1 else 1
-        # Keep the dominant account on whichever role its lead is larger for.
-        usdt_lead = abs(usdt1 - usdt2)
-        unp_lead = abs(unp1 - unp2)
-        if usdt_lead >= unp_lead:
-            seller = other
-        else:
-            buyer = other
+        # Same account leads on both -> keep it as BUYER (USDT priority),
+        # the other account takes the seller role.
+        seller = 2 if buyer == 1 else 1
 
     return {
         "buyer": buyer,
