@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b1220">
+<title>Real Order Book · UNP/USDT (MEXC)</title>
+<style>
+  :root{--bg:#0b1220;--panel:#111a2e;--line:#1e293b;--txt:#e2e8f0;--mut:#64748b;--ok:#4ade80;--bad:#f87171;--acc:#7dd3fc}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:ui-sans-serif,system-ui,Arial;background:var(--bg);color:var(--txt)}
+  header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  h1{font-size:16px;margin:0}
+  .sub{color:var(--mut);font-size:12px;margin-top:3px}
+  .mid{font-size:13px;color:var(--acc);font-variant-numeric:tabular-nums}
+  main{max-width:1000px;margin:0 auto;padding:16px}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+  @media(max-width:640px){.tiles{grid-template-columns:repeat(2,1fr)}}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .tile .k{color:var(--mut);font-size:11px;letter-spacing:.6px;text-transform:uppercase}
+  .tile .v{font-size:20px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .card h2{font-size:12px;letter-spacing:1px;text-transform:uppercase;margin:0;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .buy h2{color:var(--ok)} .sell h2{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td,th{padding:7px 14px;text-align:right;font-variant-numeric:tabular-nums}
+  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;text-align:right}
+  td:first-child,th:first-child{text-align:left}
+  tr.near{background:rgba(125,211,252,.06)}
+  tr td.p-buy{color:var(--ok)} tr td.p-sell{color:var(--bad)}
+  .far{color:var(--mut)}
+  .empty{padding:24px 14px;color:var(--mut);text-align:center}
+  .wall{margin-top:14px;padding:12px 14px;background:#2a1005;border:1px solid #7c2d12;border-radius:10px;color:#fdba74;font-size:13px;display:none}
+  .foot{color:var(--mut);font-size:12px;margin-top:14px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>📈 Real Order Book — UNP/USDT (MEXC)</h1><div class="sub">Only genuine external traders — your own market-maker orders are removed</div></div>
+  <div style="text-align:right"><div class="mid" id="mid">—</div><div class="sub"><span class="dot"></span><span id="ts">live</span></div></div>
+</header>
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="k">Real buyers · within 2%</div><div class="v" id="buy2" style="color:var(--ok)">—</div></div>
+    <div class="tile"><div class="k">Real sellers · within 2%</div><div class="v" id="sell2" style="color:var(--bad)">—</div></div>
+    <div class="tile"><div class="k">Real buyers · total</div><div class="v" id="buyt">—</div></div>
+    <div class="tile"><div class="k">Real sellers · total</div><div class="v" id="sellt">—</div></div>
+  </div>
+  <div class="grid">
+    <div class="card buy"><h2>Real BUY orders (bids)</h2><div id="bids"></div></div>
+    <div class="card sell"><h2>Real SELL orders (asks)</h2><div id="asks"></div></div>
+  </div>
+  <div class="wall" id="wall"></div>
+  <div class="foot">Auto-refreshes every 5s · “near” (highlighted) = within 2% of price · far orders greyed. This is a mirror of what real traders are doing — nothing here places or changes any order.</div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const money=v=>'$'+(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+function rows(list, side){
+  if(!list||!list.length) return '<div class="empty">no real '+(side==='buy'?'buyers':'sellers')+' right now</div>';
+  let h='<table><tr><th>Price</th><th>%</th><th>Qty (UNP)</th><th>USDT</th></tr>';
+  for(const r of list.slice(0,25)){
+    const near=Math.abs(r.pct)<=2;
+    h+=`<tr class="${near?'near':''}"><td class="p-${side}">${r.price.toFixed(5)}</td>`+
+       `<td class="${near?'':'far'}">${r.pct>0?'+':''}${r.pct.toFixed(1)}%</td>`+
+       `<td class="${near?'':'far'}">${r.qty.toLocaleString()}</td>`+
+       `<td class="${near?'':'far'}">${money(r.usd)}</td></tr>`;
+  }
+  return h+'</table>';
+}
+async function tick(){
+  try{
+    const d=await (await fetch('/api/realbook',{cache:'no-store'})).json();
+    if(d.error){ $('#ts').textContent='error: '+d.error; return; }
+    $('#mid').textContent='mid '+d.mid+'  ·  bid '+d.best_bid+' / ask '+d.best_ask;
+    $('#buy2').textContent=money(d.buy_2pct); $('#sell2').textContent=money(d.sell_2pct);
+    $('#buyt').textContent=money(d.buy_total); $('#sellt').textContent=money(d.sell_total);
+    $('#bids').innerHTML=rows(d.bids,'buy'); $('#asks').innerHTML=rows(d.asks,'sell');
+    // flag a big far sell wall
+    const wall=(d.asks||[]).filter(r=>r.pct>5).reduce((a,r)=>a+r.usd,0);
+    const w=$('#wall');
+    if(wall>1000){ w.style.display='block'; w.innerHTML='⚠️ Large sell wall parked far above market: <b>'+money(wall)+'</b> at +5% or higher. Not affecting price now, but it would cap a rally.'; }
+    else w.style.display='none';
+    $('#ts').textContent='updated '+new Date().toLocaleTimeString();
+  }catch(e){ $('#ts').textContent='connection error'; }
+}
+tick(); setInterval(tick,5000);
+</script>
+</body>
+</html>

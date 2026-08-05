@@ -30,11 +30,18 @@ TICKER_SYMBOL = os.environ.get("TICKER_SYMBOL", "UNP_USDT")
 
 
 def _market_price() -> dict:
-    """Best-effort live reference price from the exchange's public ticker."""
+    """Best-effort live reference price from the exchange's public ticker.
+    Handles both CoinW (returnTicker) and MEXC (/ticker/24hr) response shapes."""
     try:
         req = urllib.request.Request(TICKER_URL, headers={"User-Agent": api.USER_AGENT})
         with urllib.request.urlopen(req, timeout=8) as r:
             d = json.loads(r.read().decode())
+        if EXCHANGE.upper() == "MEXC":
+            # MEXC /api/v3/ticker/24hr: flat object with *Price fields
+            return {
+                "last": d.get("lastPrice"), "bid": d.get("bidPrice"),
+                "ask": d.get("askPrice"), "high": d.get("highPrice"), "low": d.get("lowPrice"),
+            }
         t = (d.get("data") or {}).get(TICKER_SYMBOL, {})
         return {
             "last": t.get("last"), "bid": t.get("highestBid"),

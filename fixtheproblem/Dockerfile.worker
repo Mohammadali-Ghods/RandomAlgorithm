@@ -1,0 +1,19 @@
+# Scoped fixer worker: python (runs the queue loop) + node/claude CLI (the agent).
+# The container itself is the security boundary — it bakes in COPIES of the bot
+# code only (no .env key files), and at runtime you mount ONLY the queue + Claude
+# auth. Do NOT mount the docker socket or /root/projects/MexcIntegration.
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code
+
+WORKDIR /app
+COPY fixproblem_worker.py /app/
+
+# /workspace = copies of the bot code the agent may inspect/edit. NO env files.
+# activate_worker.sh populates ./workspace_src/ with ONLY the .py sources first.
+COPY workspace_src/ /workspace/
+
+ENV PYTHONUNBUFFERED=1 FP_QUEUE_DIR=/queue
+CMD ["python3", "fixproblem_worker.py"]

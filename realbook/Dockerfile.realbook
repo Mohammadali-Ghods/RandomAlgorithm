@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /app
+# built from the parent RandomAlgorithm dir so orders.py is in context
+COPY orders.py algorithm_a.py realbook/realbook_server.py realbook/realbook_panel.html ./
+ENV PYTHONUNBUFFERED=1 RB_HOST=0.0.0.0 RB_PORT=8792
+EXPOSE 8792
+CMD ["python3", "realbook_server.py"]

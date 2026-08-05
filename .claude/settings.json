@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(git check-ignore *)",
+      "Bash(bash /root/projects/RandomAlgorithm/RandomAlgorithm/fixtheproblem/activate_worker.sh)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('fixproblem_server.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(docker build *)",
+      "Bash(python3 -c \"import secrets;print\\(secrets.token_urlsafe\\(8\\)\\)\")",
+      "Bash(cd /root/projects/RandomAlgorithm/RandomAlgorithm *)"
+    ],
+    "additionalDirectories": [
+      "/root/projects/RandomAlgorithm/RandomAlgorithm"
+    ]
+  }
+}

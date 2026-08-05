@@ -6,3 +6,5 @@ watchdog.log
 watchdog.pid
 watchdog_state.json
 watchdog.env
+fixtheproblem/fixproblem.env
+fixtheproblem/workspace_src/
